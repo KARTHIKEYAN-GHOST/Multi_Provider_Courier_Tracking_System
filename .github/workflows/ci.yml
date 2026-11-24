@@ -61,4 +61,18 @@ jobs:
         if: always()
         run: make destroy
 
-  # Adapter (ruff, mypy, pytest) and end-to-end jobs are added in Phases 4 and 5.
+  adapters:
+    name: Adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Start RabbitMQ
+        run: make up-deps
+      - name: Format, lint, type-check, test
+        run: make setup test-adapters
+      - name: Stop
+        if: always()
+        run: make destroy
+
+  # The end-to-end job is added in Phase 5.

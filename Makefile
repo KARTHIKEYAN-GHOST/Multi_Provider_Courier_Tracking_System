@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -18,6 +18,7 @@ env: ## Create .env from .env.example if it does not exist
 
 setup: env ## Install project-local Python environments (uv-managed Python 3.13; system Python untouched)
 	cd courier-contracts && uv sync
+	cd courier-adapters && uv sync
 
 compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
 	$(COMPOSE) config --quiet && echo "compose file OK"
@@ -59,4 +60,13 @@ update-contract-fixtures: ## Regenerate the Engine-produced contract fixtures (d
 	cd courier-engine && UPDATE_CONTRACT_FIXTURES=1 cargo test --quiet --test contracts the_engines_job_track_message
 	$(MAKE) test-contracts
 
-test: test-contracts test-engine ## Run every test suite that exists so far
+test-adapters: env ## Adapter SDK and dummy adapter: ruff, mypy, pytest (needs RabbitMQ: make up-deps)
+	cd courier-adapters && uv run ruff format --check .
+	cd courier-adapters && uv run ruff check .
+	cd courier-adapters && uv run mypy
+	cd courier-adapters && uv run pytest
+
+run-worker: env ## Run the dummy adapter worker (needs RabbitMQ and a running Engine, which declares the queues)
+	cd courier-adapters && uv run python -m adapters.dummy
+
+test: test-contracts test-engine test-adapters ## Run every test suite that exists so far

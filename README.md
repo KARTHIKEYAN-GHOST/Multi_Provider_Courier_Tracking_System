@@ -13,7 +13,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 2 — Engine foundation (migrations, API keys, endpoints, transactional dispatch) | done |
 | 2.1 — Hardening (database integrity constraints, cross-language contract test, refresh rules) | done |
 | 3 — RabbitMQ integration (outbox relay, event and dead-letter consumers, retry scheduler, reaper) | done |
-| 4 — Adapter SDK and dummy adapter | not started |
+| 4 — Adapter SDK and dummy adapter (worker runtime, concurrency, fault injection) | done |
 | 5 — First end-to-end integration | not started |
 
 ## Layout
@@ -22,10 +22,11 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 |---|---|
 | `courier-engine/` | Rust Engine: HTTP API, database migrations, business logic |
 | `courier-contracts/` | JSON Schemas, fixtures and RabbitMQ topology shared by Rust and Python |
+| `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts) and the dummy adapter |
 | `infrastructure/` | Docker Compose, PostgreSQL and RabbitMQ configuration |
 | `docs/` | Architecture and plans |
 
-`courier-adapters/` and `tests-e2e/` are added in Phases 4 and 5.
+`tests-e2e/` is added in Phase 5.
 
 ## Requirements
 
@@ -42,6 +43,7 @@ make up-deps          # PostgreSQL + RabbitMQ, waits until healthy
 make verify-deps      # databases, vhost, users, permissions
 make migrate          # apply database migrations
 make test-engine      # Engine: fmt, clippy, unit + integration tests
+make test-adapters    # Adapter SDK + dummy adapter: ruff, mypy, pytest
 make update-contract-fixtures   # only after intentionally changing a message the Engine sends
 make down             # stop (data kept); make destroy also deletes the volumes
 ```
@@ -58,7 +60,13 @@ curl -H "Authorization: Bearer <key>" -H 'content-type: application/json' \
      http://127.0.0.1:8080/v1/tracking-requests
 ```
 
-The Engine publishes each job to `adapter.dummy.jobs`. Until the Phase 4 worker exists nothing consumes that queue, so a job stays `QUEUED` until its queue-wait deadline (15 minutes for the dummy provider), is retried, and finally ends `FAILED` with `QUEUE_WAIT_EXCEEDED`.
+The Engine publishes each job to `adapter.dummy.jobs`. Start the dummy worker in a second terminal to process it:
+
+```
+make run-worker       # WORKER_CONCURRENCY=4 by default
+```
+
+The tracking-number prefix selects the dummy adapter's behaviour: `DUMMY-OK-`, `DUMMY-TRANSIT-`, `DUMMY-ODD-`, `DUMMY-NOTFOUND-`, `DUMMY-FAIL-`, `DUMMY-FATAL-`, `DUMMY-FLAKY-`, `DUMMY-SLOW-`, `DUMMY-DELAY-<ms>-`. The fault prefixes `DUMMY-HANG-`, `DUMMY-CRASHONCE-`, `DUMMY-CRASH-` and `DUMMY-DUP-` only act when the worker runs with `WORKER_ALLOW_FAULT_INJECTION=true`; otherwise they are reported as an `INTERNAL` failure. Without a running worker a job stays `QUEUED` until its queue-wait deadline (15 minutes), is retried, and finally ends `FAILED` with `QUEUE_WAIT_EXCEEDED`.
 
 `make help` lists every target. Configuration lives in `.env`, created from `.env.example` on first use.
 
