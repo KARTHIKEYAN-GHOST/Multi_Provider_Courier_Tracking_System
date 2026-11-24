@@ -12,7 +12,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 1 — Foundation (layout, Compose, contracts) | done |
 | 2 — Engine foundation (migrations, API keys, endpoints, transactional dispatch) | done |
 | 2.1 — Hardening (database integrity constraints, cross-language contract test, refresh rules) | done |
-| 3 — RabbitMQ integration | not started |
+| 3 — RabbitMQ integration (outbox relay, event and dead-letter consumers, retry scheduler, reaper) | done |
 | 4 — Adapter SDK and dummy adapter | not started |
 | 5 — First end-to-end integration | not started |
 
@@ -58,7 +58,7 @@ curl -H "Authorization: Bearer <key>" -H 'content-type: application/json' \
      http://127.0.0.1:8080/v1/tracking-requests
 ```
 
-Until Phase 3 connects RabbitMQ, a created job stays `QUEUED` and its `job.track` message waits in the `outbox_messages` table.
+The Engine publishes each job to `adapter.dummy.jobs`. Until the Phase 4 worker exists nothing consumes that queue, so a job stays `QUEUED` until its queue-wait deadline (15 minutes for the dummy provider), is retried, and finally ends `FAILED` with `QUEUE_WAIT_EXCEEDED`.
 
 `make help` lists every target. Configuration lives in `.env`, created from `.env.example` on first use.
 

@@ -46,10 +46,10 @@ test-contracts: ## Validate schemas, fixtures and topology
 migrate: env ## Apply database migrations (needs PostgreSQL: make up-deps)
 	cd courier-engine && cargo run --quiet -- migrate
 
-run-engine: env ## Run the Engine API on ENGINE_HTTP_ADDR (default 127.0.0.1:8080)
+run-engine: env ## Run the Engine (API, outbox relay, consumers, scheduler, reaper) on ENGINE_HTTP_ADDR
 	cd courier-engine && cargo run -- serve
 
-test-engine: env ## Engine: format check, lints as errors, unit + integration tests (needs PostgreSQL)
+test-engine: env ## Engine: format check, lints as errors, unit + integration tests (needs PostgreSQL and RabbitMQ: make up-deps)
 	cd courier-engine && cargo fmt --check
 	cd courier-engine && cargo clippy --all-targets -- -D warnings
 	cd courier-engine && set -a && . ../.env && set +a && cargo test

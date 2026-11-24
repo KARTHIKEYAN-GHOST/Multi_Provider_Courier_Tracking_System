@@ -1,8 +1,11 @@
-//! Messaging. Phase 2 only writes messages to the outbox; publishing and consuming
-//! through RabbitMQ are added in Phase 3.
+//! Messaging: message contracts, the transactional outbox and its relay, and the RabbitMQ
+//! connection (topology, publishing, consuming).
 
+pub mod broker;
 pub mod contracts;
 pub mod outbox;
+pub mod relay;
+pub mod topology;
 
 /// Routing, as defined in `courier-contracts/topology.yaml`.
 pub mod routing {

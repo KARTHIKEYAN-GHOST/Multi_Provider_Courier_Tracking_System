@@ -17,6 +17,43 @@ pub struct Config {
     /// `json` (default) or `pretty`.
     #[serde(default = "default_log_format")]
     pub log_format: String,
+    /// RabbitMQ connection string for the Engine account. Required by `serve`.
+    #[serde(default)]
+    pub engine_amqp_url: Option<String>,
+    /// How often the outbox relay looks for pending messages when it is idle.
+    #[serde(default = "default_outbox_poll_ms")]
+    pub outbox_poll_ms: u64,
+    #[serde(default = "default_outbox_batch")]
+    pub outbox_batch: i64,
+    /// How many unacknowledged events RabbitMQ may hand the Engine at once.
+    #[serde(default = "default_event_prefetch")]
+    pub event_prefetch: u16,
+    #[serde(default = "default_scheduler_interval_ms")]
+    pub retry_scheduler_interval_ms: u64,
+    #[serde(default = "default_reaper_interval_ms")]
+    pub reaper_interval_ms: u64,
+    /// How many times a job is retried after its message was dead-lettered.
+    #[serde(default = "default_max_dead_letter_retries")]
+    pub max_dead_letter_retries: i32,
+}
+
+fn default_outbox_poll_ms() -> u64 {
+    250
+}
+fn default_outbox_batch() -> i64 {
+    50
+}
+fn default_event_prefetch() -> u16 {
+    20
+}
+fn default_scheduler_interval_ms() -> u64 {
+    500
+}
+fn default_reaper_interval_ms() -> u64 {
+    1000
+}
+fn default_max_dead_letter_retries() -> i32 {
+    1
 }
 
 fn default_http_addr() -> String {
@@ -42,6 +79,19 @@ impl std::fmt::Debug for Config {
             .field("db_max_connections", &self.db_max_connections)
             .field("request_timeout_ms", &self.request_timeout_ms)
             .field("log_format", &self.log_format)
+            .field(
+                "engine_amqp_url",
+                &self.engine_amqp_url.as_ref().map(|_| "[redacted]"),
+            )
+            .field("outbox_poll_ms", &self.outbox_poll_ms)
+            .field("outbox_batch", &self.outbox_batch)
+            .field("event_prefetch", &self.event_prefetch)
+            .field(
+                "retry_scheduler_interval_ms",
+                &self.retry_scheduler_interval_ms,
+            )
+            .field("reaper_interval_ms", &self.reaper_interval_ms)
+            .field("max_dead_letter_retries", &self.max_dead_letter_retries)
             .finish()
     }
 }
@@ -61,6 +111,13 @@ impl Config {
             db_max_connections: default_db_max_connections(),
             request_timeout_ms: default_request_timeout_ms(),
             log_format: default_log_format(),
+            engine_amqp_url: None,
+            outbox_poll_ms: default_outbox_poll_ms(),
+            outbox_batch: default_outbox_batch(),
+            event_prefetch: default_event_prefetch(),
+            retry_scheduler_interval_ms: default_scheduler_interval_ms(),
+            reaper_interval_ms: default_reaper_interval_ms(),
+            max_dead_letter_retries: default_max_dead_letter_retries(),
         }
     }
 }
@@ -73,9 +130,12 @@ mod tests {
     fn debug_output_never_contains_database_credentials() {
         let mut config = Config::for_tests();
         config.database_url = "postgres://courier:s3cret-pass@db.internal:5432/courier".to_string();
+        config.engine_amqp_url =
+            Some("amqp://engine:s3cret-pass@mq.internal:5672/courier".to_string());
         let printed = format!("{config:?} {config:#?}");
         assert!(!printed.contains("s3cret-pass"));
         assert!(!printed.contains("postgres://"));
+        assert!(!printed.contains("amqp://"));
         assert!(printed.contains("[redacted]"));
         assert!(printed.contains("engine_http_addr"));
     }

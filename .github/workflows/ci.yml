@@ -51,8 +51,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: courier-engine
-      - name: Start PostgreSQL
-        run: make env && docker compose --env-file .env -f infrastructure/docker-compose.yml -p courier up -d --wait postgres
+      - name: Start PostgreSQL and RabbitMQ
+        run: make up-deps
       - name: Migrations apply, and are a no-op the second time
         run: make migrate && make migrate
       - name: Format, lint, test

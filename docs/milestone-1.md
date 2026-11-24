@@ -424,3 +424,15 @@ Milestone 1 is accepted when all of the following pass in an automated run from 
 ---
 
 On approval, implementation starts with **Phase 1 only** and stops for review at the end of each phase.
+
+---
+
+## Implementation notes (added as phases complete)
+
+### Phase 3
+
+- **RabbitMQ 4 does not count an explicit requeue toward `x-delivery-limit`.** Observed on RabbitMQ 4.4.1: a consumer that answers `basic.nack(requeue=true)` receives the same message indefinitely. Only a delivery that ends without any acknowledgement (the worker process or its channel dies) is counted, and the fourth such failure dead-letters the message. Consequence for the Phase 4 SDK: a worker must not use nack-with-requeue as its retry mechanism (section 1.5 says a result that cannot be published is "nacked for redelivery"); it should close its channel or exit instead, so the delivery limit still bounds the loop. The Engine's own event consumer requeues only on transient database errors and is bounded by the reaper, not by the limit.
+- **Incoming messages are validated by hand-written Rust, not a JSON Schema engine.** `messaging::contracts::parse_incoming_event` mirrors the schemas; `tests/contracts.rs` runs every shared valid and invalid fixture through it.
+- **Lock order.** Every handler locks the job row first; the result handler locks shipment then job, the same order as API dispatch.
+- **A message for an unknown job or attempt is rejected** to `engine.events.dlq`, like a malformed one.
+- **Broker tests use a unique name prefix** (`test-xxxxxxxxxxxx.`) and delete their queues afterwards. A test that panics leaves its queues behind; they can be deleted from the management UI.

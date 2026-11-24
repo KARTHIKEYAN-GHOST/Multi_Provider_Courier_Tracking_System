@@ -289,3 +289,85 @@ async fn the_active_job_status_list_is_the_same_everywhere(pool: PgPool) {
         .expect("the trigger lists statuses");
     assert_eq!(quoted(list), active, "archive trigger");
 }
+
+// ----------------------------------------------------------------------------- shared fixtures
+
+use courier_engine::messaging::contracts::{parse_incoming_event, parse_job_track};
+
+fn fixtures(directory: &str) -> Vec<(String, Vec<u8>)> {
+    let mut found: Vec<_> = fs::read_dir(contracts_dir().join("fixtures/v1").join(directory))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            name.ends_with(".json") && !name.starts_with('_')
+        })
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(&path).unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Runs a fixture through the parser the Engine uses for that message type.
+fn parse_fixture(name: &str, body: &[u8]) -> Result<(), String> {
+    if name.starts_with("job.track.") {
+        parse_job_track(body).map(|_| ()).map_err(|e| e.0)
+    } else {
+        parse_incoming_event(body).map(|_| ()).map_err(|e| e.0)
+    }
+}
+
+/// The Rust validation is hand-written, not generated from the JSON Schemas. These two tests
+/// are what keeps it honest: it must agree with the schemas on every shared fixture — the
+/// same files the Python validator is tested against.
+#[test]
+fn every_valid_fixture_is_accepted_by_the_engine() {
+    let valid = fixtures("valid");
+    assert!(valid.len() >= 14);
+    for (name, body) in valid.iter().chain(fixtures("produced").iter()) {
+        if let Err(reason) = parse_fixture(name, body) {
+            panic!("{name} was rejected: {reason}");
+        }
+    }
+}
+
+#[test]
+fn every_invalid_fixture_is_rejected_by_the_engine() {
+    let invalid = fixtures("invalid");
+    assert!(invalid.len() >= 24);
+    for (name, body) in &invalid {
+        assert!(
+            parse_fixture(name, body).is_err(),
+            "{name} was accepted but the schema rejects it"
+        );
+    }
+    // Every fixture listed in the expectations file was exercised (none silently skipped).
+    let expectations: Value = serde_json::from_slice(
+        &fs::read(contracts_dir().join("fixtures/v1/invalid/_expectations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(expectations.as_object().unwrap().len(), invalid.len());
+}
+
+/// A fixture routed to the wrong parser must not slip through on its `type`.
+#[test]
+fn a_message_of_another_type_is_rejected() {
+    for (name, body) in fixtures("valid") {
+        if name.starts_with("job.track.") {
+            assert!(
+                parse_incoming_event(&body).is_err(),
+                "{name} accepted as a worker event"
+            );
+        } else {
+            assert!(
+                parse_job_track(&body).is_err(),
+                "{name} accepted as job.track"
+            );
+        }
+    }
+}

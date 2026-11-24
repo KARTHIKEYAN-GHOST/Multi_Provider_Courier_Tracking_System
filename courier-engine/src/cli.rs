@@ -3,8 +3,25 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use sqlx::PgPool;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
-use crate::{api, config::Config, db, services::api_keys, state::AppState, telemetry};
+use crate::{
+    api,
+    config::Config,
+    db,
+    messaging::{
+        broker::{self, BrokerHealth, BrokerSettings},
+        topology::Topology,
+    },
+    services::{
+        api_keys,
+        background::{run_reaper, run_retry_scheduler},
+        close_attempt::RetryPolicy,
+    },
+    state::AppState,
+    telemetry,
+};
 
 #[derive(Parser)]
 #[command(name = "courier-engine", version, about = "Courier tracking Engine")]
@@ -66,9 +83,48 @@ pub async fn run() -> anyhow::Result<()> {
     }
 }
 
+/// Runs the HTTP API together with the background work: the broker session (outbox relay,
+/// event consumer, dead-letter consumer), the retry scheduler and the reaper.
 async fn serve(pool: PgPool, config: Config) -> anyhow::Result<()> {
+    let amqp_url = config
+        .engine_amqp_url
+        .clone()
+        .context("ENGINE_AMQP_URL is not set; the Engine needs RabbitMQ to dispatch jobs")?;
+    let policy = RetryPolicy {
+        max_dead_letter_retries: config.max_dead_letter_retries,
+    };
+    let settings = BrokerSettings {
+        amqp_url,
+        topology: Topology::load().map_err(anyhow::Error::msg)?,
+        policy,
+        event_prefetch: config.event_prefetch,
+        outbox_batch: config.outbox_batch,
+        outbox_poll: Duration::from_millis(config.outbox_poll_ms),
+    };
+
+    let shutdown = CancellationToken::new();
+    let health = BrokerHealth::default();
+    let mut background = tokio::task::JoinSet::new();
+    background.spawn(broker::run(
+        settings,
+        pool.clone(),
+        health.clone(),
+        shutdown.clone(),
+    ));
+    background.spawn(run_retry_scheduler(
+        pool.clone(),
+        Duration::from_millis(config.retry_scheduler_interval_ms),
+        shutdown.clone(),
+    ));
+    background.spawn(run_reaper(
+        pool.clone(),
+        Duration::from_millis(config.reaper_interval_ms),
+        policy,
+        shutdown.clone(),
+    ));
+
     let addr = config.engine_http_addr.clone();
-    let app = api::router(AppState::new(pool, config));
+    let app = api::router(AppState::new(pool, config).with_broker(health));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("cannot listen on {addr}"))?;
@@ -76,6 +132,10 @@ async fn serve(pool: PgPool, config: Config) -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // The API has drained; now let each background task finish the message it is on.
+    shutdown.cancel();
+    while background.join_next().await.is_some() {}
     tracing::info!("engine stopped");
     Ok(())
 }

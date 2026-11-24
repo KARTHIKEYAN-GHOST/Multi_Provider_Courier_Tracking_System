@@ -8,7 +8,10 @@ pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-/// Readiness: dependencies are reachable. (The RabbitMQ check is added with messaging in Phase 3.)
+/// Readiness: PostgreSQL answers and the broker session is up.
+///
+/// The API itself keeps accepting requests while RabbitMQ is down (jobs wait in the outbox),
+/// but the Engine reports not-ready so an orchestrator or operator can see it.
 pub async fn readyz(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.pool)
@@ -17,7 +20,15 @@ pub async fn readyz(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
             tracing::warn!(error = %e, "readiness check failed: database");
             ApiError::Unavailable("database")
         })?;
+    let broker = match &state.broker {
+        Some(health) if health.is_connected() => "ok",
+        Some(_) => {
+            tracing::warn!("readiness check failed: broker");
+            return Err(ApiError::Unavailable("broker"));
+        }
+        None => "not_configured",
+    };
     Ok(Json(
-        json!({ "status": "ready", "checks": { "database": "ok" } }),
+        json!({ "status": "ready", "checks": { "database": "ok", "broker": broker } }),
     ))
 }
