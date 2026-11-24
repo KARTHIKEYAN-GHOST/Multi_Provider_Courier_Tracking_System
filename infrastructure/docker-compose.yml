@@ -1,7 +1,8 @@
-# Local development stack. Phase 1 contains only the two infrastructure dependencies;
-# the engine and adapter workers are added in Phase 5.
+# Local stack: PostgreSQL, RabbitMQ, the Engine and the dummy adapter worker.
 #
-# Run through the Makefile (make up-deps), which supplies --env-file .env and the project name.
+# Run through the Makefile, which supplies --env-file .env and the project name:
+#   make up-deps   PostgreSQL + RabbitMQ only (for development and the test suites)
+#   make up        everything
 
 name: courier
 
@@ -54,6 +55,61 @@ services:
       timeout: 10s
       retries: 24
       start_period: 20s
+
+  # Applies database migrations once, then exits. The Engine starts only after it succeeded.
+  engine-migrate:
+    build: &engine-build
+      context: ..
+      dockerfile: courier-engine/Dockerfile
+    image: courier-engine:local
+    command: ["migrate"]
+    restart: "no"
+    environment: &engine-environment
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENGINE_AMQP_URL: amqp://${RABBITMQ_ENGINE_USER}:${RABBITMQ_ENGINE_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      ENGINE_HTTP_ADDR: 0.0.0.0:8080
+      LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  engine:
+    build: *engine-build
+    image: courier-engine:local
+    restart: unless-stopped
+    environment: *engine-environment
+    ports:
+      - "127.0.0.1:${ENGINE_HOST_PORT:-8080}:8080"
+    depends_on:
+      engine-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl; opening the port is enough to know the API is up.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # The worker uses the restricted RabbitMQ account and has no database access at all.
+  adapter-dummy:
+    build:
+      context: ..
+      dockerfile: courier-adapters/Dockerfile
+    image: courier-adapter-worker:local
+    command: ["-m", "adapters.dummy"]
+    restart: unless-stopped   # a crashed worker comes back and RabbitMQ redelivers its jobs
+    stop_grace_period: 40s    # longer than WORKER_SHUTDOWN_GRACE_S, so in-flight jobs can finish
+    environment:
+      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      WORKER_ALLOW_FAULT_INJECTION: ${WORKER_ALLOW_FAULT_INJECTION:-false}
+      LOG_FORMAT: json
+    depends_on:
+      engine:
+        condition: service_healthy   # the Engine declares the queues the worker reads
 
 volumes:
   postgres-data:

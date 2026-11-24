@@ -75,4 +75,39 @@ jobs:
         if: always()
         run: make destroy
 
-  # The end-to-end job is added in Phase 5.
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: courier-engine
+      - uses: astral-sh/setup-uv@v5
+      - name: Start PostgreSQL and RabbitMQ
+        run: make up-deps
+      - name: Engine and worker processes, end to end
+        run: make setup test-e2e
+      - name: Engine and worker logs on failure
+        if: failure()
+        run: tail -n 300 tests-e2e/logs/*.log
+      - name: Stop
+        if: always()
+        run: make destroy
+
+  containers:
+    name: Container stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start Engine and worker containers
+        run: make up
+      - name: One tracking request through the containers
+        run: make smoke
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose --env-file .env -f infrastructure/docker-compose.yml -p courier logs --tail=200
+      - name: Stop
+        if: always()
+        run: make destroy

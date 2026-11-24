@@ -95,7 +95,9 @@ async fn serve(pool: PgPool, config: Config) -> anyhow::Result<()> {
     };
     let settings = BrokerSettings {
         amqp_url,
-        topology: Topology::load().map_err(anyhow::Error::msg)?,
+        topology: Topology::load()
+            .map_err(anyhow::Error::msg)?
+            .with_prefix(&config.engine_topology_prefix),
         policy,
         event_prefetch: config.event_prefetch,
         outbox_batch: config.outbox_batch,

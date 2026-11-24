@@ -35,6 +35,10 @@ pub struct Config {
     /// How many times a job is retried after its message was dead-lettered.
     #[serde(default = "default_max_dead_letter_retries")]
     pub max_dead_letter_retries: i32,
+    /// Prefix of every exchange and queue name. Empty in normal operation; the end-to-end
+    /// tests set it so that they never touch the real queues.
+    #[serde(default)]
+    pub engine_topology_prefix: String,
 }
 
 fn default_outbox_poll_ms() -> u64 {
@@ -92,6 +96,7 @@ impl std::fmt::Debug for Config {
             )
             .field("reaper_interval_ms", &self.reaper_interval_ms)
             .field("max_dead_letter_retries", &self.max_dead_letter_retries)
+            .field("engine_topology_prefix", &self.engine_topology_prefix)
             .finish()
     }
 }
@@ -118,6 +123,7 @@ impl Config {
             retry_scheduler_interval_ms: default_scheduler_interval_ms(),
             reaper_interval_ms: default_reaper_interval_ms(),
             max_dead_letter_retries: default_max_dead_letter_retries(),
+            engine_topology_prefix: String::new(),
         }
     }
 }

@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up smoke test-e2e
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -19,6 +19,7 @@ env: ## Create .env from .env.example if it does not exist
 setup: env ## Install project-local Python environments (uv-managed Python 3.13; system Python untouched)
 	cd courier-contracts && uv sync
 	cd courier-adapters && uv sync
+	cd tests-e2e && uv sync
 
 compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
 	$(COMPOSE) config --quiet && echo "compose file OK"
@@ -28,6 +29,12 @@ up-deps: env ## Start PostgreSQL and RabbitMQ and wait until both are healthy
 
 verify-deps: env ## Check databases, RabbitMQ vhost, users and permissions
 	bash infrastructure/verify-deps.sh "$(DOCKER)"
+
+up: env ## Build and start the full stack: PostgreSQL, RabbitMQ, Engine and dummy worker
+	$(COMPOSE) up -d --build --wait
+
+smoke: env ## Check the running full stack (make up) with one real tracking request
+	bash infrastructure/smoke.sh "$(DOCKER)"
 
 down: ## Stop containers (data volumes are kept)
 	$(COMPOSE) down
@@ -69,4 +76,9 @@ test-adapters: env ## Adapter SDK and dummy adapter: ruff, mypy, pytest (needs R
 run-worker: env ## Run the dummy adapter worker (needs RabbitMQ and a running Engine, which declares the queues)
 	cd courier-adapters && uv run python -m adapters.dummy
 
-test: test-contracts test-engine test-adapters ## Run every test suite that exists so far
+test-e2e: env ## End-to-end: real Engine + worker processes on a private database and queues (needs make up-deps)
+	cd courier-engine && cargo build --quiet
+	cd courier-adapters && uv sync --quiet
+	cd tests-e2e && uv run ruff format --check . && uv run ruff check . && uv run pytest
+
+test: test-contracts test-engine test-adapters test-e2e ## Run every test suite

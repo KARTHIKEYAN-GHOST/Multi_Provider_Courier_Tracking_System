@@ -1,0 +1,12 @@
+# The build context is the repository root (both images need courier-contracts/).
+.git
+.env
+.env.*
+**/target
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+tests-e2e
+docs

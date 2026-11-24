@@ -3,6 +3,7 @@
 A multi-provider courier tracking system: a Rust Engine that owns the database and business logic, Python adapter workers that talk to courier providers, and RabbitMQ between them.
 
 - [docs/architecture.md](docs/architecture.md) — system-wide architecture
+- [docs/contracts.md](docs/contracts.md) — the messages between Engine and workers
 - [docs/milestone-1.md](docs/milestone-1.md) — Milestone 1 plan and acceptance criteria
 
 ## Status
@@ -14,7 +15,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 2.1 — Hardening (database integrity constraints, cross-language contract test, refresh rules) | done |
 | 3 — RabbitMQ integration (outbox relay, event and dead-letter consumers, retry scheduler, reaper) | done |
 | 4 — Adapter SDK and dummy adapter (worker runtime, concurrency, fault injection) | done |
-| 5 — First end-to-end integration | not started |
+| 5 — First end-to-end integration (containers, end-to-end suite) | done |
 
 ## Layout
 
@@ -24,15 +25,14 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | `courier-contracts/` | JSON Schemas, fixtures and RabbitMQ topology shared by Rust and Python |
 | `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts) and the dummy adapter |
 | `infrastructure/` | Docker Compose, PostgreSQL and RabbitMQ configuration |
-| `docs/` | Architecture and plans |
-
-`tests-e2e/` is added in Phase 5.
+| `tests-e2e/` | End-to-end tests: real Engine and worker processes on a private database and queues |
+| `docs/` | Architecture, contracts and plans |
 
 ## Requirements
 
 - Docker with the Compose plugin, and permission to use the Docker daemon
 - [uv](https://docs.astral.sh/uv/) — it downloads its own Python 3.13; the system Python is not used or changed
-- Rust (from Phase 2)
+- Rust
 
 ## Quick start
 
@@ -44,6 +44,9 @@ make verify-deps      # databases, vhost, users, permissions
 make migrate          # apply database migrations
 make test-engine      # Engine: fmt, clippy, unit + integration tests
 make test-adapters    # Adapter SDK + dummy adapter: ruff, mypy, pytest
+make test-e2e         # Engine + worker end to end (about 80 s)
+make up               # full stack in containers: + Engine + dummy worker
+make smoke            # one tracking request through the containers
 make update-contract-fixtures   # only after intentionally changing a message the Engine sends
 make down             # stop (data kept); make destroy also deletes the volumes
 ```
