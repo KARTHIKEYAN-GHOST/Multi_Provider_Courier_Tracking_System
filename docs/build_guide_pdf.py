@@ -1,0 +1,497 @@
+import sys
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (PageBreak, Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table,
+                                TableStyle, KeepTogether)
+
+OUT = sys.argv[1]
+INK = colors.HexColor("#1f2933"); ACCENT = colors.HexColor("#0b5c8a"); SOFT = colors.HexColor("#eef3f7")
+LINE = colors.HexColor("#c5d0da")
+ss = getSampleStyleSheet()
+body = ParagraphStyle("body", parent=ss["Normal"], fontName="Helvetica", fontSize=9.6, leading=13.6, textColor=INK, spaceAfter=5)
+h1 = ParagraphStyle("h1", parent=body, fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=ACCENT, spaceBefore=4, spaceAfter=8)
+h2 = ParagraphStyle("h2", parent=body, fontName="Helvetica-Bold", fontSize=12, leading=15, textColor=INK, spaceBefore=9, spaceAfter=4)
+h3 = ParagraphStyle("h3", parent=body, fontName="Helvetica-Bold", fontSize=10, leading=13, textColor=ACCENT, spaceBefore=6, spaceAfter=2)
+bul = ParagraphStyle("bul", parent=body, leftIndent=12, bulletIndent=2, spaceAfter=2)
+cell = ParagraphStyle("cell", parent=body, fontSize=8.6, leading=11.4, spaceAfter=0)
+cellb = ParagraphStyle("cellb", parent=cell, fontName="Helvetica-Bold", textColor=colors.white)
+code = ParagraphStyle("code", parent=body, fontName="Courier", fontSize=8.2, leading=10.6, backColor=SOFT, borderPadding=5, leftIndent=4, spaceBefore=3, spaceAfter=8)
+title = ParagraphStyle("title", parent=h1, fontSize=26, leading=31, alignment=TA_CENTER)
+sub = ParagraphStyle("sub", parent=body, fontSize=12, leading=16, alignment=TA_CENTER, textColor=colors.HexColor("#52606d"))
+
+S = []
+def H1(t): S.append(PageBreak()); S.append(Paragraph(t, h1))
+def H2(t): S.append(Paragraph(t, h2))
+def H3(t): S.append(Paragraph(t, h3))
+def P(t): S.append(Paragraph(t, body))
+def B(*items):
+    for i in items: S.append(Paragraph(i, bul, bulletText="•"))
+    S.append(Spacer(1, 3))
+def C(t): S.append(Preformatted(t.strip("\n"), code))
+def T(head, rows, widths):
+    data = [[Paragraph(h, cellb) for h in head]] + [[Paragraph(str(c), cell) for c in r] for r in rows]
+    t = Table(data, colWidths=[w * mm for w in widths], repeatRows=1)
+    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), ACCENT), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, SOFT]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+    S.append(t); S.append(Spacer(1, 8))
+def M(name, need, how):  # one method
+    S.append(KeepTogether([Paragraph(f"<font face='Courier-Bold' size='9'>{name}</font>", h3),
+        Paragraph(f"<b>Why it is needed:</b> {need}", bul), Paragraph(f"<b>How it works:</b> {how}", bul), Spacer(1, 3)]))
+
+# ---------------------------------------------------------------- cover
+S += [Spacer(1, 60 * mm), Paragraph("Courier Tracking System", title), Spacer(1, 6),
+      Paragraph("Project guide: what has been built, how it works, and why", sub), Spacer(1, 14),
+      Paragraph("Covers Phases 1 to 6: Rust Engine, PostgreSQL, RabbitMQ, Python Adapter SDK,<br/>dummy, DHL and demo-site adapters, credentials, tests and containers", sub),
+      Spacer(1, 30 * mm), Paragraph("State of the repository after Phase 6, 24 November 2026", sub)]
+
+# ---------------------------------------------------------------- 1
+H1("1. What this project is")
+P("The Courier Tracking System tracks parcels across many courier companies through one API. A user asks "
+  "\"where is tracking number X of courier Y?\"; the system asks the courier, stores the answer, translates the "
+  "courier's own wording into one common set of statuses, and keeps the history.")
+P("Couriers differ a lot: some have an official API, some only a website, some need a login or an OTP. The system "
+  "is therefore split into two halves that never share code or a database:")
+B("<b>The Engine (Rust)</b> owns the database and every business decision: who may see what, when a lookup runs, "
+  "when it is retried, what a status means.",
+  "<b>Adapters (Python)</b> know how to talk to exactly one courier. They fetch and extract, nothing else.",
+  "<b>RabbitMQ</b> is the only channel between them. They exchange small JSON messages with a fixed, versioned format.")
+H2("What exists today")
+P("Milestone 1 is finished. It builds the whole pipeline with a <b>dummy courier</b> instead of a real one, so every "
+  "path (success, failure, retry, timeout, crash, duplicate) could be built and tested before real couriers add their "
+  "own problems.")
+T(["Phase", "Delivered", "Commit"], [
+  ["1", "Repository layout, Docker Compose (PostgreSQL + RabbitMQ), message schemas, fixtures, topology file, CI skeleton", "4c155b4"],
+  ["2", "Engine: migrations, API keys, HTTP API, transactional dispatch (job + outbox in one transaction)", "4c155b4"],
+  ["2.1", "Hardening: database integrity constraints, cross-language contract test, refresh rules", "4c155b4"],
+  ["3", "Engine messaging: outbox relay, event consumer, dead-letter consumer, retry scheduler, reaper", "a1640e6"],
+  ["4", "Python Adapter SDK (worker runtime) and the dummy adapter", "689606b"],
+  ["5", "End-to-end test suite, Dockerfiles, full Compose stack, contracts documentation", "cd28ea1"]], [14, 128, 24])
+H2("What is deliberately not built yet")
+B("Real courier adapters, provider credentials and the secrets API, rate limiting (Phase 6)",
+  "Automatic re-polling of shipments, archiving and retention (Phase 7)",
+  "Redis, sessions, OTP / CAPTCHA workflow and the human interface (Phase 8)",
+  "AI diagnosis and sandboxed AI repair (Phases 9 and 10)",
+  "Metrics, circuit breaker, production deployment (Phases 11 and 12)")
+
+# ---------------------------------------------------------------- 2
+H1("2. Architecture")
+C("""
+   User / client
+        |  HTTPS + API key
+        v
+ +----------------------+        job.track         +---------------------------+
+ |   Engine  (Rust)     | -----------------------> |  Adapter worker (Python)  |
+ |  Axum API            |      RabbitMQ            |  SDK + one adapter        |
+ |  business logic      | <----------------------- |  (today: dummy adapter)   |
+ |  outbox / consumers  |  job.started, job.result +---------------------------+
+ +----------+-----------+                                        |
+            |  SQL (only the Engine)                             v
+            v                                            courier API / website
+      PostgreSQL                                          (none for the dummy)
+""")
+H2("Rules the whole design follows")
+T(["Rule", "Why"], [
+  ["Only the Engine touches the database", "One owner of the data means one place for every rule. Adapters cannot corrupt state."],
+  ["Adapters and Engine talk only through messages", "They can be deployed, scaled and restarted independently, and an adapter crash cannot take the Engine down."],
+  ["Delivery is at-least-once, consumers are idempotent", "No broker can promise exactly-once. Instead every message may arrive twice, late or out of order, and processing it again changes nothing."],
+  ["No secrets in messages", "Messages are stored in queues and logs. Passwords and API keys never travel in them."],
+  ["PostgreSQL's clock is the time authority", "Deadlines are computed and compared in the database, so clock differences between machines cannot break them."],
+  ["Every external response is untrusted", "Text from a courier website may be written to manipulate software (or later an AI model). It is stored as data and never executed or logged into messages."]], [58, 108])
+H2("Technology")
+T(["Part", "Technology"], [
+  ["Engine", "Rust 2024 edition, Tokio, Axum 0.8 (HTTP), SQLx 0.9 (PostgreSQL), Lapin 4 (RabbitMQ), tracing (JSON logs)"],
+  ["Adapters", "Python 3.13 managed by uv (the system Python is never touched), aio-pika, Pydantic, structlog"],
+  ["Database", "PostgreSQL 17"], ["Broker", "RabbitMQ 4 with quorum queues"],
+  ["Local infrastructure", "Docker Compose only (no Kubernetes)"],
+  ["Tests", "cargo test with a database per test, pytest, a process-level end-to-end suite"]], [40, 126])
+H2("Repository layout")
+T(["Path", "Contents"], [
+  ["courier-contracts/", "JSON Schemas, example messages (fixtures), RabbitMQ topology. Shared by Rust and Python; the source of truth for the message format."],
+  ["courier-engine/", "The Rust Engine: src/api (HTTP), src/db (queries), src/services (business logic), src/messaging (RabbitMQ), migrations/, tests/"],
+  ["courier-adapters/", "courier_adapter_sdk/ (worker runtime and contracts), adapters/dummy/, tests/"],
+  ["tests-e2e/", "End-to-end tests that run the real Engine and worker"],
+  ["infrastructure/", "docker-compose.yml, PostgreSQL and RabbitMQ setup scripts, smoke.sh"],
+  ["docs/", "architecture.md (whole system), milestone-1.md (detailed plan + notes), contracts.md (messages)"],
+  ["Makefile", "Every developer command (see chapter 10)"]], [40, 126])
+
+# ---------------------------------------------------------------- 3
+H1("3. The life of one tracking request")
+P("This is the most important chapter: once this flow is clear, every table and function has an obvious place.")
+T(["#", "Where", "What happens"], [
+  ["1", "API", "The user sends POST /v1/tracking-requests with provider_code and tracking_number. The API key is checked."],
+  ["2", "Engine, one transaction", "Four things are written together or not at all: the shipment (or the existing one is reused), the user's subscription, a tracking job in status QUEUED with its first attempt, and an outbox row containing the job.track message."],
+  ["3", "Outbox relay", "A background task reads pending outbox rows and publishes them to RabbitMQ. It marks a row sent only after the broker confirmed it."],
+  ["4", "Worker", "The worker receives job.track, checks it, publishes job.started, runs the adapter under a timeout, publishes job.result and only then acknowledges the job message."],
+  ["5", "Engine event consumer", "job.started moves the job to PROCESSING and sets a deadline for the result. job.result closes the attempt."],
+  ["6", "Engine result handling", "On success the raw response is stored, events are saved (duplicates ignored), each raw status is mapped to a normalized status, and the shipment status is updated. The job becomes COMPLETED."],
+  ["7", "API", "The user reads GET /v1/tracking-requests/{id} and /events."]], [8, 34, 124])
+H2("Job states")
+C("""
+ QUEUED --> PROCESSING --> COMPLETED            (answer received: SUCCESS or NOT_FOUND)
+    |            |
+    |            +--> RETRYING --> QUEUED       (attempt + 1, after a growing delay)
+    |            |
+    +------------+--> FAILED                    (not retryable, or attempts used up)
+""")
+P("Shipment status is separate from job status. The job says how the <i>lookup</i> is going; the shipment says where "
+  "the <i>parcel</i> is: CREATED, PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, RETURNED, EXCEPTION, UNKNOWN.")
+H2("Why an outbox?")
+P("If the Engine saved the job and then published to RabbitMQ directly, a crash between the two steps would leave a job "
+  "that nobody ever works on (or a message for a job that was never saved). Writing the message into the database in "
+  "the same transaction as the job removes that gap: the message exists exactly when the job exists, and the relay "
+  "publishes it later, as often as needed.")
+H2("Logical attempt and physical execution")
+B("A <b>logical attempt</b> is (job_id, attempt). The Engine creates it, it has one message, and it is closed exactly once. Table: job_attempts.",
+  "A <b>physical execution</b> is one actual run of that message by a worker. A redelivery after a crash gives a second execution of the same attempt. Table: adapter_execution_logs, keyed by an execution_id the worker generates.")
+P("Each execution ends with one disposition: <b>accepted</b> (its result closed the attempt), <b>duplicate</b> (another "
+  "execution's result came first), <b>stale</b> (the attempt had already been closed by the reaper or dead-letter "
+  "handler) or <b>incomplete</b> (started, no result: crashed or hung). The first result wins; nothing later can change it.")
+
+# ---------------------------------------------------------------- 4
+H1("4. Reliability: what happens when things go wrong")
+H2("Three separate timers")
+P("Waiting in a queue, running an adapter and recovering from a lost worker are different problems. Each has its own "
+  "clock, owner and error class, so a busy queue is never mistaken for a slow courier.")
+T(["Timer", "Measures", "Enforced by", "Error on expiry"], [
+  ["Queue-wait deadline", "Time from dispatch until some worker starts the attempt (default 15 min)", "Engine reaper, while the job is QUEUED", "QUEUE_WAIT_EXCEEDED"],
+  ["Adapter timeout", "Time one execution spends inside the adapter (timeout_ms). Starts when execution starts, not when the message was sent.", "Worker (asyncio.timeout)", "ADAPTER_TIMEOUT"],
+  ["Execution recovery deadline", "Time the Engine waits for a result after job.started (timeout_ms + grace)", "Engine reaper, while the job is PROCESSING", "WORKER_LOST"]], [30, 56, 36, 44])
+H2("One way to close an attempt")
+P("Three actors can end an attempt: the result handler, the dead-letter handler and the reaper. All call one function, "
+  "close_attempt, whose heart is a single guarded UPDATE:")
+C("UPDATE tracking_jobs SET status = ... \nWHERE id = $job AND attempt = $attempt AND status IN ('QUEUED','PROCESSING')")
+P("Whoever commits first wins; the others match zero rows and do nothing. The decision about what comes next is made "
+  "in that same place: success becomes COMPLETED; a retryable failure with attempts left becomes RETRYING with a delay "
+  "of base x 2^(attempt-1), plus or minus 20 % jitter, capped; everything else becomes FAILED. Only the retry scheduler "
+  "ever opens a new attempt, so two competing retries are impossible.")
+H2("Failure cases and their outcome")
+T(["What goes wrong", "What the system does"], [
+  ["Courier is down or times out", "The adapter raises a typed error; the worker reports FAILURE with a retryable class; the Engine retries with growing delays up to max_attempts."],
+  ["Courier refuses permanently (blocked, bad credentials, unparseable page)", "Non-retryable class: the job fails after one attempt."],
+  ["Tracking number unknown", "Outcome NOT_FOUND. This is an answer, not a failure: job COMPLETED, shipment UNKNOWN, no retry."],
+  ["Adapter runs too long", "The worker cancels it at timeout_ms, cleans up, reports ADAPTER_TIMEOUT. Other jobs in the worker are unaffected."],
+  ["Worker process crashes", "Its job messages were not acknowledged, so RabbitMQ delivers them again. Same attempt, new execution."],
+  ["A job crashes the worker every time", "After 4 failed deliveries RabbitMQ moves the message to a dead-letter queue. The Engine consumes that queue, closes the attempt as DELIVERY_LIMIT_EXCEEDED, retries once, and fails the job the second time."],
+  ["Worker hangs without dying", "No result arrives; the reaper closes the attempt as WORKER_LOST after the recovery deadline."],
+  ["No worker is running", "The job waits. If the queue-wait deadline passes, the reaper closes it as QUEUE_WAIT_EXCEEDED. Old messages are dropped by the worker when it returns."],
+  ["The same result arrives twice", "The Engine records every processed message_id (inbox). The second copy is recognized and ignored."],
+  ["A late result for an old attempt arrives", "Logged as a stale execution. Job state, events and stored responses are untouched."],
+  ["Engine is down while a worker finishes", "The result waits in the durable queue and is processed after restart."],
+  ["Worker cannot publish its result", "It does not acknowledge the job, drops its broker connection and reconnects. RabbitMQ redelivers and counts the failure."],
+  ["A malformed message arrives", "Rejected to a dead-letter queue. It never blocks the messages behind it."]], [56, 110])
+H2("Two lessons learned from RabbitMQ 4")
+B("An explicit \"requeue this message\" (nack with requeue) is <b>not</b> counted toward the queue's delivery limit; it would loop forever. Only a delivery that ends without acknowledgement (connection or process gone) is counted. The worker therefore never requeues explicitly.",
+  "The message count RabbitMQ reports for a quorum queue lags behind reality, so tests look into a queue instead of trusting its count.")
+H2("Known limitation")
+P("When a worker crashes, every job that process was running is lost with it. A healthy job that is delivered in step "
+  "with a job that always crashes the worker, through both dead-letter cycles, also ends FAILED with "
+  "DELIVERY_LIMIT_EXCEEDED, because RabbitMQ cannot tell which job caused the crash. A healthy job that arrives after "
+  "the first crash, or finishes between crashes, completes. A possible later fix is to retry dead-lettered jobs one at "
+  "a time so the harmful one identifies itself.")
+
+# ---------------------------------------------------------------- 5
+H1("5. Data model")
+P("PostgreSQL, owned by the Engine. All IDs are UUID version 7 (time-ordered). Nine migrations in "
+  "courier-engine/migrations create everything.")
+T(["Table", "Purpose"], [
+  ["users, api_keys", "Callers. Only the SHA-256 hash and a 12-character prefix of each API key are stored."],
+  ["providers", "Courier definitions: timeout_ms, queue_wait_max_ms, result_grace_ms, max_attempts, retry delays."],
+  ["adapters, adapter_versions", "Which adapter (and queue) serves a provider."],
+  ["provider_status_mappings", "Courier wording -> normalized status, e.g. PKG_DELIVERED -> DELIVERED."],
+  ["shipments", "One \"generation\" of a tracking number with its current status. Couriers reuse numbers, so uniqueness applies only to non-archived rows."],
+  ["tracking_requests", "A user's subscription to a shipment. Users own subscriptions, never shipments, so two users tracking the same parcel share one shipment and one lookup."],
+  ["tracking_jobs", "One lookup of a shipment: status, attempt counter, the three deadlines, dead_letter_count, correlation_id. At most one active job per shipment (unique index)."],
+  ["job_attempts", "One row per logical attempt: outcome, error class, who closed it, the accepted execution, execution count."],
+  ["adapter_execution_logs", "One row per physical execution: worker, delivery count, times, reported outcome, disposition."],
+  ["raw_tracking_responses", "The courier's answer exactly as received, for debugging and later AI analysis."],
+  ["tracking_events", "Event history with raw and normalized status. Unique per shipment and content, so repeated lookups add no duplicates."],
+  ["outbox_messages", "Messages waiting to be published (transactional outbox)."],
+  ["processed_messages", "The inbox: (consumer, message_id) of every handled message, for deduplication."],
+  ["dead_letters", "A record of every dead-lettered job message and whether it changed a job."]], [44, 122])
+H2("Rules enforced by the database itself (migration 0009)")
+P("Application code can have bugs, so the most important invariants are also constraints. A violation names the rule.")
+B("Each job status requires its timestamp: QUEUED needs a queue deadline, PROCESSING an execution deadline, RETRYING a next-attempt time.",
+  "A job is COMPLETED only with an outcome; completed_at is set exactly for terminal jobs; attempt never exceeds max_attempts.",
+  "Every job has a job_attempts row for its current attempt (a deferred trigger that checks at commit).",
+  "No job can be created for an archived shipment, and a shipment with an active job cannot be archived (triggers that lock the shipment row first).",
+  "An outbox row and the message inside it must carry the same message_id and type.",
+  "At most one enabled adapter per provider; API key hashes must be 32 bytes.")
+H2("Concurrent requests")
+P("Twenty identical requests arriving at the same instant must not create twenty shipments or jobs. The create "
+  "transaction uses INSERT ... ON CONFLICT on the unique indexes: the first insert wins and locks the row, the others "
+  "wait and then reuse it. The result, verified by tests: one shipment, one subscription per user, one job, one message.")
+
+# ---------------------------------------------------------------- 6
+H1("6. HTTP API and security")
+P("The Engine listens on port 8080. Every /v1 route needs <font face='Courier'>Authorization: Bearer &lt;api-key&gt;</font>. "
+  "Every response carries X-Correlation-Id. Errors always have the shape {\"error\": {code, message, details}}.")
+T(["Method and path", "Behaviour"], [
+  ["GET /healthz", "The process is alive."], ["GET /readyz", "PostgreSQL and RabbitMQ are reachable."],
+  ["GET /v1/providers", "Enabled couriers."],
+  ["POST /v1/tracking-requests", "Start tracking. 201 for a new subscription, 200 if the caller already has it. 404 unknown provider, 422 invalid input."],
+  ["GET /v1/tracking-requests", "The caller's requests, paginated."],
+  ["GET /v1/tracking-requests/{id}", "Request, shipment status and latest job."],
+  ["GET .../{id}/events", "Event history with raw and normalized status."],
+  ["GET .../{id}/jobs", "Lookup jobs with status, attempt, error class."],
+  ["POST .../{id}/refresh", "Ask for a fresh lookup: 202 job_created, or 200 job_already_active. 409 if the shipment is archived."],
+  ["DELETE .../{id}", "Cancel the caller's own subscription. 204."]], [52, 114])
+H2("API keys")
+B("Format: ctk_&lt;12-character prefix&gt;_&lt;256-bit random secret&gt;.",
+  "Created with the command line (admin create-user / create-api-key) and printed exactly once.",
+  "Only the prefix and the SHA-256 hash are stored. Lookup is by prefix; comparison is constant-time, so timing reveals nothing.",
+  "Keys can be revoked. They never appear in logs.")
+H2("Access control")
+P("Every query is filtered by the caller's user ID. Using another user's request ID returns 404, exactly like an ID "
+  "that does not exist, so the API never confirms that someone else's request exists. Subscribers of the same shipment "
+  "see the same events but never each other.")
+H2("Other security measures in place")
+B("Two RabbitMQ accounts: the Engine account manages the topology; the worker account can only read adapter queues and publish to the events exchange. It cannot create anything and has no database access.",
+  "Configuration objects print [redacted] instead of connection strings.",
+  "Unexpected adapter errors are reported by type only; their text (possibly courier content) stays in the worker log.",
+  "Containers run as non-root users and have no secrets baked into the images.")
+
+# ---------------------------------------------------------------- 7
+H1("7. Messages between Engine and workers")
+P("All messages are JSON inside one common envelope. The exact definitions are the JSON Schemas in "
+  "courier-contracts/schemas/v1; docs/contracts.md explains them in prose.")
+T(["Envelope field", "Meaning"], [
+  ["message_id", "Unique per message. Consumers deduplicate on it."],
+  ["type, schema_version", "job.track / job.started / job.result, version \"1.0\". Unknown fields are ignored; an unknown major version is rejected."],
+  ["correlation_id", "Created for the API request and copied into every message and log line, so one ID traces a request through both programs."],
+  ["causation_id", "The message this one answers."], ["producer, occurred_at", "Who sent it and when (UTC)."]], [44, 122])
+T(["Message", "Direction", "Content"], [
+  ["job.track", "Engine -> worker", "job_id, attempt, adapter_key, provider_code, tracking_number, params, timeout_ms, expires_at"],
+  ["job.started", "worker -> Engine", "job_id, attempt, execution_id, delivery_count, worker_id, adapter version, started_at"],
+  ["job.result", "worker -> Engine", "The same identity plus finished_at, outcome (SUCCESS / NOT_FOUND / FAILURE), raw_response and events on success, error (class, message, retryable) on failure"]], [26, 30, 110])
+H2("RabbitMQ topology (courier-contracts/topology.yaml)")
+T(["Queue", "Receives", "Consumer"], [
+  ["adapter.dummy.jobs", "job.track for the dummy adapter (delivery limit 3, then dead-lettered)", "Dummy workers"],
+  ["engine.events", "job.started and job.result", "Engine event consumer"],
+  ["adapter.dummy.jobs.dlq", "Dead-lettered job messages", "Engine dead-letter consumer"],
+  ["engine.events.dlq", "Events the Engine rejected as malformed", "None (kept for operators)"]], [44, 86, 36])
+H2("How the two languages are kept in agreement")
+B("The same fixture files (valid and invalid examples) are run through the Rust parser and the Python models; both must accept and reject the same ones.",
+  "A \"golden file\" test: the Engine's real message builder writes a job.track message to a committed file, and the Python side validates that file. If the Rust output changes, the test fails until the file is regenerated on purpose (make update-contract-fixtures; refused in CI).")
+
+# ---------------------------------------------------------------- 8
+H1("8. Important functions: the Engine (Rust)")
+P("Paths are relative to courier-engine/src.")
+H2("Dispatch and API keys")
+M("services/dispatch.rs: create request / refresh", "Starting a lookup must be all-or-nothing and safe under simultaneous requests.",
+  "One transaction: upsert the shipment (ON CONFLICT locks the row), insert the subscription, insert the job only if no active job exists, then the attempt row and the outbox row. Deadlines use the database clock.")
+M("dispatch::job_track_message(...)", "The message format must be testable without a database.",
+  "A pure function that builds the job.track envelope from its inputs. The golden-file contract test calls it directly.")
+M("services/api_keys.rs: issue / issue_with", "Keys must be unguessable and never stored in readable form.",
+  "Generates a random prefix and secret from the operating system, stores only prefix and SHA-256 hash, returns the full key once. Retries if a prefix collides.")
+M("api/auth.rs: authentication extractor", "Every /v1 route needs an identified caller.",
+  "Parses the Bearer header, finds the key by prefix, compares hashes in constant time, rejects revoked keys with 401, records last_used_at.")
+H2("Messaging")
+M("messaging/relay.rs: relay_once(pool, publisher, batch)", "Outbox rows must reach RabbitMQ at least once, even across crashes.",
+  "Selects pending rows with FOR UPDATE SKIP LOCKED (so several relays never take the same row), publishes each, and marks it sent only after the broker confirmed it. A crash in between just causes a second publish with the same message_id.")
+M("messaging/broker.rs: run / declare_topology / BrokerPublisher", "The Engine must survive broker outages and own the queue layout.",
+  "run is a reconnect loop. On each connection it declares exchanges and queues from topology.yaml, then starts the relay and the two consumers. Publishing uses confirms, the mandatory flag and persistent messages.")
+M("messaging/contracts.rs: parse_incoming_event(body)", "Nothing from outside may be trusted, including messages.",
+  "Checks size, JSON shape, version and every field rule (mirroring the JSON Schemas) and returns a typed Started or Result event, or a reason for rejection.")
+M("messaging/topology.rs: Topology::load / with_prefix", "Queue names must have one source, and tests need private copies.",
+  "Reads topology.yaml (embedded at compile time). with_prefix puts a prefix before every exchange and queue name; ENGINE_TOPOLOGY_PREFIX uses it for end-to-end tests.")
+H2("Business logic")
+M("services/events.rs: handle_event -> on_started / on_result", "Worker events must be applied exactly once in effect, in any order.",
+  "One transaction: record the message_id in the inbox (a duplicate stops here), lock the job, upsert the execution row by execution_id. on_started moves QUEUED to PROCESSING and sets the recovery deadline. on_result calls close_attempt and, if it won, stores the answer. The message is acknowledged only after commit.")
+M("services/events.rs: store_answer", "A successful result must become stored history and a shipment status.",
+  "Saves the raw response, inserts events (the unique key drops duplicates), maps each raw status through provider_status_mappings (unknown wording becomes UNKNOWN, the raw value is kept) and updates the shipment.")
+M("services/close_attempt.rs: close_attempt", "Three actors may try to end the same attempt at the same moment.",
+  "The single guarded UPDATE described in chapter 4. Decides COMPLETED, RETRYING (with the back-off delay) or FAILED, and counts dead-letters inside the same statement.")
+M("services/dead_letter.rs: handle_dead_letter", "A job whose message was dead-lettered would otherwise stay open until a deadline.",
+  "Reads job_id and attempt from the dead-lettered message, calls close_attempt with DELIVERY_LIMIT_EXCEEDED, and always writes a dead_letters row saying whether it applied. A dead-letter for an already closed attempt changes nothing.")
+M("services/reaper.rs: reap_expired", "Safety net: no job may stay QUEUED or PROCESSING forever.",
+  "Every second, selects jobs past their queue or execution deadline (SKIP LOCKED) and closes them as QUEUE_WAIT_EXCEEDED or WORKER_LOST.")
+M("services/retry_scheduler.rs: open_due_attempts", "Exactly one actor may start a new attempt.",
+  "Selects RETRYING jobs whose time has come (SKIP LOCKED) and, in one transaction, sets QUEUED, increments attempt, sets a new deadline and inserts the attempt and outbox rows.")
+M("cli.rs: serve / migrate / admin", "One binary for running, migrating and administering.",
+  "serve starts the API plus the broker session, scheduler and reaper, and shuts them down in order on SIGTERM (requests first, then background tasks).")
+
+# ---------------------------------------------------------------- 9
+H1("9. Important functions: Adapter SDK and dummy adapter (Python)")
+P("Paths are relative to courier-adapters. An adapter author writes one class with one method; the SDK does the rest.")
+C("""
+class MyCourier(Adapter):
+    key = "mycourier"; version = "1.0.0"
+
+    async def track(self, request, ctx) -> TrackingResult:
+        client = await ctx.enter(httpx.AsyncClient())      # closed automatically
+        ...
+        raise ShipmentNotFound(...)   # or RateLimited(...), ParseError(...), ...
+        return TrackingResult(raw_response, events)
+
+run(MyCourier())
+""")
+M("courier_adapter_sdk/worker.py: Worker.submit", "A slow job must not block the others, and the number of parallel jobs must be bounded.",
+  "Takes a slot from a semaphore of size WORKER_CONCURRENCY and starts the job as its own asyncio task. It returns when the job has started, not when it finishes.")
+M("Worker._run", "The job message may be acknowledged only when its result is safely stored by the broker.",
+  "validate -> drop if expired -> publish job.started -> run adapter -> publish job.result (confirmed) -> acknowledge. Cleanup always runs at the end.")
+M("Worker._accept", "Bad or outdated messages must never reach an adapter.",
+  "Invalid, oversized or foreign messages are rejected to the dead-letter queue. A first delivery that arrives after expires_at (plus 5 s tolerance) is dropped; a redelivery is always executed.")
+M("Worker._execute", "Every way an adapter can end needs one consistent classification.",
+  "Runs adapter.track inside asyncio.timeout(timeout_ms). Timeout -> ADAPTER_TIMEOUT, ShipmentNotFound -> NOT_FOUND, typed errors -> their class, anything else -> INTERNAL.")
+M("Worker._publish_result", "A result the Engine never receives must not be lost silently.",
+  "Builds and validates job.result, replaces an oversized result with a failure, publishes with confirmation. If publishing fails, the job is left unacknowledged and the session is dropped so RabbitMQ redelivers.")
+M("Worker.drain / WorkerProcess.run", "Deployments and outages must not lose or duplicate work unnecessarily.",
+  "On SIGTERM the worker stops consuming, lets running jobs finish within WORKER_SHUTDOWN_GRACE_S, then cancels the rest. run reconnects with a capped back-off and waits for its queue if the Engine has not created it yet.")
+M("context.py: JobContext.enter / on_cleanup", "A failed, timed-out or cancelled job must not leak HTTP clients (later: browsers).",
+  "Resources are registered on an exit stack. The SDK closes it after every job, protected from cancellation and limited by WORKER_CLEANUP_TIMEOUT_S.")
+M("errors.py: AdapterError classes and describe()", "The Engine decides about retries from the error class, so classification must be deterministic.",
+  "Each error class fixes its error_class and whether it is retryable (NetworkTimeout, RateLimited: yes; Blocked, ParseError: no). describe() turns any exception into the error section of a result.")
+M("contracts/*.py: Pydantic models; envelope.new_id()", "Python must read and write exactly the agreed message format.",
+  "Models mirror the JSON Schemas (lowercase UUIDs, UTC timestamps with Z, outcome rules). new_id builds a UUID version 7 by hand because Python 3.13 has none built in.")
+M("topology.py: routes_for(adapter_key)", "Queue names must come from the shared topology file, not be typed twice.", "Finds the queue bound to job.track.v1.&lt;adapter_key&gt; and the events exchange.")
+H2("The dummy adapter (adapters/dummy/adapter.py)")
+P("It calls nothing external. The tracking-number prefix selects a behaviour, which is how every path can be tested on demand.")
+T(["Prefix", "Behaviour"], [
+  ["DUMMY-OK-", "Three events ending in delivered"], ["DUMMY-TRANSIT-", "Two events, in transit"],
+  ["DUMMY-ODD-", "Includes a status the Engine has no mapping for"], ["DUMMY-NOTFOUND-", "Number unknown"],
+  ["DUMMY-FAIL- / DUMMY-FATAL-", "Retryable failure every time / permanent failure"],
+  ["DUMMY-FLAKY-", "Fails the first attempt, then succeeds"],
+  ["DUMMY-SLOW- / DUMMY-DELAY-&lt;ms&gt;-", "Never finishes (timeout) / waits the given time, then succeeds"],
+  ["DUMMY-HANG-, -CRASHONCE-, -CRASH-, -DUP-", "Simulated worker hang, crash once, crash always, duplicated result. These act only with WORKER_ALLOW_FAULT_INJECTION=true; otherwise they are an ordinary INTERNAL failure, so a production worker cannot be made to crash by a tracking number."]], [56, 110])
+
+# ---------------------------------------------------------------- 10
+H1("10. Running, testing and operating")
+H2("Commands (Makefile)")
+T(["Command", "What it does"], [
+  ["make setup", "Creates the project-local Python environments with uv (Python 3.13). The system Python is untouched."],
+  ["make up-deps / verify-deps", "Starts PostgreSQL (host port 55432) and RabbitMQ (5672, management UI 15672) and checks users and permissions."],
+  ["make migrate", "Applies database migrations."],
+  ["make run-engine / run-worker", "Runs the Engine and the dummy worker on the host."],
+  ["make test-contracts", "Schemas, fixtures, topology (76 tests)."],
+  ["make test-engine", "cargo fmt, clippy with warnings as errors, 120 unit and integration tests."],
+  ["make test-adapters", "ruff, mypy (strict), 136 tests including real RabbitMQ."],
+  ["make test-e2e", "26 end-to-end tests, about 80 seconds."],
+  ["make test", "All of the above."],
+  ["make up / make smoke", "Builds and starts the full container stack; sends one tracking request through it."],
+  ["make down / destroy", "Stops containers (destroy also deletes the data volumes)."]], [50, 116])
+H2("Trying it by hand")
+C("""
+make up-deps && make migrate
+cd courier-engine && cargo run -- admin create-user --email you@example.com   # prints the key once
+make run-engine          # terminal 1
+make run-worker          # terminal 2
+curl -H "Authorization: Bearer <key>" -H 'content-type: application/json' \\
+     -d '{"provider_code":"dummy","tracking_number":"DUMMY-OK-1"}' \\
+     http://127.0.0.1:8080/v1/tracking-requests
+""")
+H2("How the tests are organized")
+T(["Suite", "Technique"], [
+  ["Engine", "Each test gets its own empty database. Handlers are called directly so message order can be controlled exactly (result before started, stale dead-letter, reaper racing the dead-letter handler). Broker tests use a randomly prefixed topology that is deleted afterwards."],
+  ["Adapter SDK", "Jobs wait on gates the test opens, so \"exactly 2 jobs run at once\" is proven without sleeps. Integration tests start the real worker process and send it real signals."],
+  ["End-to-end", "tests-e2e/harness.py starts the real Engine binary and worker as supervised processes on a private database (courier_e2e) and prefixed queues, restarts the worker when it dies, and can stop or kill either one. Provider timings are shortened so failures play out in seconds."]], [30, 136])
+H2("Configuration (.env, created from .env.example)")
+T(["Setting", "Meaning"], [
+  ["DATABASE_URL, ENGINE_AMQP_URL, WORKER_AMQP_URL", "Connection strings. Secrets: never logged."],
+  ["ENGINE_HTTP_ADDR", "API address, default 127.0.0.1:8080."],
+  ["OUTBOX_POLL_MS, RETRY_SCHEDULER_INTERVAL_MS, REAPER_INTERVAL_MS", "How often the background tasks look for work (250 / 500 / 1000 ms)."],
+  ["MAX_DEAD_LETTER_RETRIES", "Retries after a dead-letter (1)."],
+  ["WORKER_CONCURRENCY, WORKER_PREFETCH", "Parallel jobs per worker (4)."],
+  ["WORKER_SHUTDOWN_GRACE_S, WORKER_CLEANUP_TIMEOUT_S", "Shutdown and cleanup limits (30 s / 5 s)."],
+  ["WORKER_ALLOW_FAULT_INJECTION", "Test environments only."],
+  ["Per provider, in the providers table", "timeout_ms, queue_wait_max_ms, result_grace_ms, max_attempts, retry_base_ms, retry_max_ms"]], [70, 96])
+
+# ---------------------------------------------------------------- 11
+H1("11. Phase 6: credentials, real adapters, rate limiting")
+P("Phase 6 lets the system talk to real couriers. That needs three things the dummy courier never did: secrets (API keys), "
+  "politeness towards the courier (rate limits) and permission (for scraping). Full details are in docs/phase-6.md.")
+H2("How a secret travels")
+B("An operator stores the secret with the admin command set-credential. The Engine encrypts it; the database holds only ciphertext.",
+  "The job message carries only credential_ref, an ID that is useless on its own. No secret ever enters RabbitMQ.",
+  "The worker exchanges the reference for the secret over the Engine's internal HTTP API, proving who it is with a worker token.",
+  "The Engine answers only for a job of that worker's adapter that is in flight right now, and records every request in an append-only audit log.",
+  "The adapter holds the secret in memory for one job. The Secret type prints only its field names, so it cannot be logged by accident.")
+H2("Important functions")
+M("MasterKey::seal / open (services/crypto.rs)",
+  "Secrets must not be stored in plain text.",
+  "Envelope encryption with AES-256-GCM: a random data key encrypts the secret, the master key (CREDENTIAL_MASTER_KEY) encrypts the data key. Both are bound to the credential and provider IDs, so ciphertext copied to another row cannot be opened.")
+M("credentials::resolve (services/credentials.rs)",
+  "Decides whether a worker may have a secret; the one place that hands secrets out.",
+  "Checks, in one transaction: the token's adapter serves the job, the attempt is the job's current one and is QUEUED or PROCESSING, the reference belongs to the job's provider, a credential is in use. Writes an audit row for every outcome. All refusals look identical to the caller (403).")
+M("worker_tokens::issue / authenticate",
+  "Workers need an identity that is separate from user API keys and tied to one adapter.",
+  "Token cwt_<prefix>_<secret>; only the prefix and the SHA-256 hash are stored; compared in constant time; revocable.")
+M("DispatchTarget::blocked_reason (db/providers.rs)",
+  "A job that cannot succeed, or must not run, should never be created.",
+  "Refuses providers that need a credential but have none, and scraping providers whose site owner's permission has not been recorded (scraping_authorized). The API answers 409 provider_unavailable.")
+M("reserve_dispatch_slot (db/providers.rs)",
+  "A courier's API must not be called faster than it allows.",
+  "Each provider has min_dispatch_interval_ms. Inside the dispatch transaction the next free time slot is taken from the provider row (row lock = no two jobs share a slot). The outbox message becomes publishable at its slot and the queue-wait deadline starts there.")
+M("set_test_providers_enabled (ENABLE_DUMMY_PROVIDER)",
+  "Test couriers must not be offered in production.",
+  "At start-up the Engine enables or disables every provider flagged is_test (dummy, demosite).")
+M("JobContext.credentials() and JobContext.http() (SDK)",
+  "Adapters need the secret and an HTTP client without handling tokens, cleanup or error mapping themselves.",
+  "credentials() calls the Engine with the job's own identity. http() returns a client that is closed when the job ends. check_status() and describe() turn HTTP statuses and network failures into the right error class (429 with Retry-After, 5xx, 401, 403, timeouts).")
+M("DhlAdapter.track and parse_shipments (adapters/dhl)",
+  "The first official-API courier.",
+  "Calls DHL's Shipment Tracking - Unified API with the key in a header, then turns the JSON into events. Written from DHL's published description and tested against a fake DHL server; not yet tried against the real API.")
+M("DemoSiteAdapter.track and parse_tracking_page (adapters/demosite)",
+  "The first scraping adapter, built without touching any real website.",
+  "Fetches a page of the demo courier website shipped in demo_site/ and parses its history table with BeautifulSoup. A redesigned page is reported as SCHEMA_DRIFT, an unreadable value as PARSE_ERROR; page text is treated as data only.")
+H2("Operating it")
+C("""
+make master-key        # put the output in .env as CREDENTIAL_MASTER_KEY
+cd courier-engine
+cargo run -- admin set-credential --provider dhl < dhl.json     # {"api_key": "..."}
+cargo run -- admin create-worker-token --adapter dhl            # printed once
+cargo run -- admin set-scraping-authorized --provider X --authorized true
+""")
+P("Losing the master key makes the stored credentials unreadable: back it up separately from the database.")
+
+# ---------------------------------------------------------------- 12
+H1("12. Current state, open points and what comes next")
+H2("Verified")
+B("476 automated tests pass: 79 contract, 145 Engine, 213 adapter, 39 end-to-end.",
+  "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
+  "The worker runs correctly with the restricted RabbitMQ account.")
+H2("Not yet verified")
+B("The Docker images and the full container stack (make up, make smoke) had not been built at the time of writing; the Compose file itself validates.",
+  "The GitHub Actions workflow has been written but never run.",
+  "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
+  "Master-key rotation tooling and an external secrets manager are not built.")
+H2("Open decisions and leftovers")
+B("The dummy courier is created by migration 0008 in every database. Since Phase 6 the ENABLE_DUMMY_PROVIDER setting can switch it off.",
+  "Test leftovers in the development PostgreSQL: a few smoke-test users and shipments in database courier, the database courier_e2e (recreated by every end-to-end run) and one old _sqlx_test_... database. None affect the system.",
+  "adapter_versions is not filled yet; sent outbox rows are never cleaned up; there is no minimum interval between manual refreshes.",
+  "The \"job in step with a crashing job\" limitation described in chapter 4.")
+H2("Roadmap")
+T(["Phase", "Deliverable"], [
+  ["6 (done)", "Encrypted credential storage and an internal resolve API, the DHL adapter, a scraping adapter against a local demo site, per-provider rate limiting"],
+  ["7", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
+  ["8", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
+  ["9", "AI service: failure diagnosis and status interpretation (advisory only, no tools, validated output)"],
+  ["10", "Sandboxed AI adapter repair that ends in a pull request; a human merges"],
+  ["11", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
+  ["12", "Production images and deployment documentation"]], [16, 150])
+H2("Glossary")
+T(["Term", "Meaning"], [
+  ["Adapter", "Python class that talks to one courier."], ["Worker", "A process running one adapter for many jobs at once."],
+  ["Job", "One lookup of one shipment."], ["Attempt / execution", "A logical try created by the Engine / one actual run by a worker."],
+  ["Outbox", "Table of messages to publish, written in the same transaction as the data they describe."],
+  ["Inbox", "Table of message IDs already processed, used to ignore duplicates."],
+  ["Dead-letter queue (DLQ)", "Where RabbitMQ puts messages that were rejected or failed too often."],
+  ["Reaper", "Engine task that closes attempts whose deadline has passed."],
+  ["Idempotent", "Doing it twice has the same effect as doing it once."],
+  ["Correlation ID", "One ID that follows a request through API, messages and logs."],
+  ["Quorum queue", "RabbitMQ's replicated, durable queue type with a delivery limit."]], [44, 122])
+
+def footer(canvas, doc):
+    canvas.saveState(); canvas.setFont("Helvetica", 8); canvas.setFillColor(colors.HexColor("#7b8794"))
+    if doc.page > 1:
+        canvas.drawString(20 * mm, 11 * mm, "Courier Tracking System - project guide")
+        canvas.drawRightString(190 * mm, 11 * mm, f"Page {doc.page}")
+    canvas.restoreState()
+
+doc = SimpleDocTemplate(OUT, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=18 * mm, bottomMargin=18 * mm,
+                        title="Courier Tracking System - Project Guide", author="Courier Tracking System")
+doc.build(S, onFirstPage=footer, onLaterPages=footer)

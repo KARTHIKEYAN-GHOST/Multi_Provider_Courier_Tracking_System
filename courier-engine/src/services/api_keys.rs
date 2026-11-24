@@ -45,9 +45,14 @@ fn os_random<const N: usize>() -> [u8; N] {
 }
 
 pub fn generate() -> GeneratedKey {
+    generate_for(SCHEME)
+}
+
+/// A key of the same shape under another scheme name (worker tokens use `cwt`).
+pub fn generate_for(scheme: &str) -> GeneratedKey {
     let prefix = hex::encode(os_random::<{ PREFIX_HEX_LEN / 2 }>());
     let secret = hex::encode(os_random::<{ SECRET_HEX_LEN / 2 }>());
-    let full = format!("{SCHEME}_{prefix}_{secret}");
+    let full = format!("{scheme}_{prefix}_{secret}");
     let hash = hash(&full);
     GeneratedKey { full, prefix, hash }
 }
@@ -58,6 +63,10 @@ pub fn hash(full_key: &str) -> [u8; 32] {
 
 /// Returns the prefix if the text has the shape of a key. Checked before touching the database.
 pub fn parse_prefix(presented: &str) -> Option<&str> {
+    parse_prefix_for(SCHEME, presented)
+}
+
+pub fn parse_prefix_for<'a>(expected_scheme: &str, presented: &'a str) -> Option<&'a str> {
     let mut parts = presented.split('_');
     let (scheme, prefix, secret) = (parts.next()?, parts.next()?, parts.next()?);
     let is_hex = |s: &str| {
@@ -65,7 +74,7 @@ pub fn parse_prefix(presented: &str) -> Option<&str> {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
     let well_formed = parts.next().is_none()
-        && scheme == SCHEME
+        && scheme == expected_scheme
         && prefix.len() == PREFIX_HEX_LEN
         && secret.len() == SECRET_HEX_LEN
         && is_hex(prefix)

@@ -35,6 +35,30 @@ queues:
       - exchange: courier.jobs
         routing_key: job.track.v1.dummy
 
+  - name: adapter.dhl.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.dhl.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.dhl
+
+  - name: adapter.demosite.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.demosite.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.demosite
+
   - name: engine.events
     durable: true
     consumer: engine-event-consumer
@@ -59,6 +83,24 @@ queues:
     bindings:
       - exchange: courier.dlx
         routing_key: adapter.dummy.jobs
+
+  - name: adapter.dhl.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.dhl.jobs
+
+  - name: adapter.demosite.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.demosite.jobs
 
   # Events the Engine itself rejected as malformed. Parked for operators; not auto-consumed.
   - name: engine.events.dlq

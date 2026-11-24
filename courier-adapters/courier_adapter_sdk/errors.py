@@ -7,6 +7,8 @@ specific class it can; anything else it raises is reported as ``INTERNAL``.
 
 from __future__ import annotations
 
+import httpx
+
 from .contracts import ErrorClass, ErrorInfo
 
 _MAX_MESSAGE = 2000
@@ -99,6 +101,12 @@ def describe(error: BaseException) -> ErrorInfo:
     """Turns whatever an adapter raised into the error section of a ``job.result``."""
     if isinstance(error, AdapterError):
         return error.to_info()
+    # Network failures of the HTTP client, so adapters need not catch and re-raise them.
+    # Only the kind of failure is reported: the exception text can contain the URL.
+    if isinstance(error, httpx.TimeoutException):
+        return NetworkTimeout(f"the provider did not answer in time ({type(error).__name__})").to_info()
+    if isinstance(error, httpx.TransportError):
+        return NetworkConnectError(f"the provider could not be reached ({type(error).__name__})").to_info()
     if isinstance(error, TimeoutError):
         return ErrorInfo(
             error_class=ErrorClass.ADAPTER_TIMEOUT,

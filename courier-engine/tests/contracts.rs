@@ -50,6 +50,11 @@ fn golden_job_track() -> String {
         timeout_ms: 10_000,
         queue_wait_max_ms: 900_000,
         max_attempts: 3,
+        tracking_method: TrackingMethod::Api,
+        scraping_authorized: false,
+        requires_credential: false,
+        min_dispatch_interval_ms: 0,
+        credential_id: None,
     };
     let message = dispatch::job_track_message(
         fixed_uuid(0x10),

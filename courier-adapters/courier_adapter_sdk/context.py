@@ -8,7 +8,11 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import structlog
+
+from .credentials import CredentialDenied, CredentialResolver, Secret
+from .http import new_client
 
 
 @dataclass
@@ -27,7 +31,28 @@ class JobContext:
     delivery_count: int
     correlation_id: str
     log: structlog.stdlib.BoundLogger
+    #: Opaque reference from the job message; exchanged for the secret by ``credentials()``.
+    credential_ref: str | None = None
+    _resolver: CredentialResolver | None = field(default=None, repr=False)
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack, repr=False)
+
+    async def credentials(self) -> Secret:
+        """The provider credential for this job, fetched from the Engine.
+
+        Call it when the secret is needed and keep it in a local variable. Do not log it,
+        store it on the adapter, or put it into the result.
+        """
+        if self.credential_ref is None:
+            raise CredentialDenied("the job carries no credential reference; none is stored for the provider")
+        if self._resolver is None:
+            raise CredentialDenied("this worker is not configured to resolve credentials")
+        return await self._resolver.resolve(self.credential_ref, self.job_id, self.attempt)
+
+    def http(self, **options: Any) -> httpx.AsyncClient:
+        """An HTTP client for this job. It is closed when the job ends, however it ends."""
+        client = new_client(**options)
+        self._stack.push_async_callback(client.aclose)
+        return client
 
     async def enter[T](self, resource: AbstractAsyncContextManager[T]) -> T:
         """Enter an async context manager; it is exited when the job ends."""

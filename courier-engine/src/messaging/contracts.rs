@@ -80,6 +80,11 @@ pub struct JobTrack {
     /// Queue-wait deadline; independent of `timeout_ms`.
     #[serde(with = "utc_timestamp")]
     pub expires_at: DateTime<Utc>,
+    /// Opaque reference to the credential the adapter needs. Never the secret itself: the
+    /// worker exchanges it for the secret over the Engine's internal API. Absent when the
+    /// provider needs no credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<Uuid>,
 }
 
 pub const JOB_STARTED: &str = "job.started";
@@ -408,6 +413,9 @@ mod validate {
             return fail(path, "params must be an object");
         }
         integer(p, "timeout_ms", path, 1, 600_000)?;
+        if p.get("credential_ref").is_some() {
+            uuid_field(p, "credential_ref", path)?;
+        }
         timestamp_field(p, "expires_at", path)
     }
 

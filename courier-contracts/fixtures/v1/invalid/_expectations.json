@@ -173,5 +173,13 @@
       "payload"
     ],
     "reason": "started_at is mandatory so a result is complete without job.started"
+  },
+  "job.track.credential_ref_not_uuid.json": {
+    "keyword": "pattern",
+    "path": [
+      "payload",
+      "credential_ref"
+    ],
+    "reason": "a credential reference is an opaque UUID, never a secret"
   }
 }

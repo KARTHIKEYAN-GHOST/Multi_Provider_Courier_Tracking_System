@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -30,16 +31,38 @@ pub struct DispatchTarget {
     pub timeout_ms: i32,
     pub queue_wait_max_ms: i32,
     pub max_attempts: i32,
+    pub tracking_method: TrackingMethod,
+    pub scraping_authorized: bool,
+    pub requires_credential: bool,
+    /// Minimum time between two dispatches to this provider; 0 means no limit.
+    pub min_dispatch_interval_ms: i32,
+    /// The provider's credential in use, if one is stored.
+    pub credential_id: Option<Uuid>,
+}
+
+impl DispatchTarget {
+    /// Why a new job must not be created for this provider right now, if there is a reason.
+    pub fn blocked_reason(&self) -> Option<&'static str> {
+        if self.tracking_method != TrackingMethod::Api && !self.scraping_authorized {
+            return Some("scraping this provider has not been authorized");
+        }
+        if self.requires_credential && self.credential_id.is_none() {
+            return Some("no credential is stored for this provider");
+        }
+        None
+    }
 }
 
 // Every SQL string in the Engine is a compile-time constant; shared fragments use macros.
 macro_rules! dispatch_target_select {
     () => {
         "SELECT p.id AS provider_id, p.code AS provider_code, a.id AS adapter_id, a.key AS adapter_key,
-                p.timeout_ms, p.queue_wait_max_ms, p.max_attempts
+                p.timeout_ms, p.queue_wait_max_ms, p.max_attempts, p.tracking_method,
+                p.scraping_authorized, p.requires_credential, p.min_dispatch_interval_ms,
+                c.id AS credential_id
          FROM providers p
-         JOIN adapters a ON a.provider_id = p.id AND a.enabled
-         WHERE p.enabled"
+         JOIN adapters a ON a.provider_id = p.id
+         LEFT JOIN provider_credentials c ON c.provider_id = p.id AND c.revoked_at IS NULL"
     };
 }
 
@@ -49,7 +72,7 @@ pub async fn dispatch_target_by_code(
 ) -> Result<Option<DispatchTarget>, sqlx::Error> {
     sqlx::query_as::<_, DispatchTarget>(concat!(
         dispatch_target_select!(),
-        " AND p.code = $1 ORDER BY a.key LIMIT 1"
+        " WHERE p.enabled AND a.enabled AND p.code = $1 ORDER BY a.key LIMIT 1"
     ))
     .bind(code)
     .fetch_optional(conn)
@@ -62,9 +85,56 @@ pub async fn dispatch_target_by_id(
 ) -> Result<Option<DispatchTarget>, sqlx::Error> {
     sqlx::query_as::<_, DispatchTarget>(concat!(
         dispatch_target_select!(),
-        " AND p.id = $1 ORDER BY a.key LIMIT 1"
+        " WHERE p.enabled AND a.enabled AND p.id = $1 ORDER BY a.key LIMIT 1"
     ))
     .bind(provider_id)
     .fetch_optional(conn)
     .await
+}
+
+/// The target of a job that already exists (used for retries). The job keeps the adapter it
+/// was created with, even if the provider has been disabled since.
+pub async fn dispatch_target_by_adapter(
+    conn: &mut PgConnection,
+    adapter_id: Uuid,
+) -> Result<Option<DispatchTarget>, sqlx::Error> {
+    sqlx::query_as::<_, DispatchTarget>(concat!(dispatch_target_select!(), " WHERE a.id = $1"))
+        .bind(adapter_id)
+        .fetch_optional(conn)
+        .await
+}
+
+/// Rate limiting: reserves the next free dispatch slot of a provider and returns it.
+///
+/// Slots are `min_dispatch_interval_ms` apart. The provider row is locked while the slot is
+/// taken, so concurrent dispatches (from any number of Engine instances) each get their own
+/// slot. The caller publishes its message no earlier than the returned time.
+pub async fn reserve_dispatch_slot(
+    conn: &mut PgConnection,
+    provider_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, sqlx::Error> {
+    sqlx::query_scalar::<_, DateTime<Utc>>(
+        "UPDATE providers
+         SET next_dispatch_at = GREATEST(COALESCE(next_dispatch_at, $2), $2)
+                                + min_dispatch_interval_ms * interval '1 millisecond'
+         WHERE id = $1
+         RETURNING next_dispatch_at - min_dispatch_interval_ms * interval '1 millisecond'",
+    )
+    .bind(provider_id)
+    .bind(now)
+    .fetch_one(conn)
+    .await
+}
+
+/// Applies ENABLE_DUMMY_PROVIDER: switches every test provider on or off. Returns how many
+/// providers changed.
+pub async fn set_test_providers_enabled(pool: &PgPool, enabled: bool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE providers SET enabled = $1, updated_at = now() WHERE is_test AND enabled <> $1",
+    )
+    .bind(enabled)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }

@@ -28,6 +28,8 @@ class JobTrack(Contract):
     timeout_ms: Annotated[int, Field(ge=1, le=600_000, strict=True)]
     # Queue-wait deadline; independent of timeout_ms.
     expires_at: UtcTimestamp
+    # Opaque reference to the credential the adapter needs; never the secret itself.
+    credential_ref: UuidStr | None = None
 
 
 class JobTrackEnvelope(Envelope[JobTrack]):

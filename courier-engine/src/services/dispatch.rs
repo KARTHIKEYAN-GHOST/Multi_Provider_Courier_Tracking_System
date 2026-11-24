@@ -86,6 +86,10 @@ async fn try_create(
     let target = db::providers::dispatch_target_by_code(&mut tx, input.provider_code)
         .await?
         .ok_or(DispatchError::UnknownProvider)?;
+    if let Some(reason) = target.blocked_reason() {
+        tracing::warn!(provider = %target.provider_code, reason, "tracking request refused");
+        return Err(DispatchError::ProviderUnavailable);
+    }
 
     // 1. Shipment: find or create, and lock the row for the rest of this transaction.
     let shipment = tracking::upsert_active_shipment(&mut tx, target.provider_id, number).await?;
@@ -169,6 +173,10 @@ pub async fn refresh(
     let target = db::providers::dispatch_target_by_id(&mut tx, owned.provider_id)
         .await?
         .ok_or(DispatchError::ProviderUnavailable)?;
+    if let Some(reason) = target.blocked_reason() {
+        tracing::warn!(provider = %target.provider_code, reason, "refresh refused");
+        return Err(DispatchError::ProviderUnavailable);
+    }
 
     let result = match ensure_job(
         &mut tx,
@@ -228,26 +236,65 @@ async fn ensure_job(
 
     let attempt = 1;
     tracking::insert_attempt(conn, job.id, attempt, now).await?;
-
-    let message = job_track_message(
-        Uuid::now_v7(),
+    enqueue_job_track(
+        conn,
         target,
         job.id,
         attempt,
         tracking_number,
         correlation_id,
         now,
+    )
+    .await?;
+    Ok(Some(job.id))
+}
+
+/// Writes the `job.track` outbox message of one attempt, honouring the provider's rate limit.
+///
+/// For a rate-limited provider the attempt gets the provider's next free dispatch slot: the
+/// message becomes publishable at that time, and the queue-wait deadline (already stored as
+/// `now + queue_wait_max_ms` by the caller) is moved to `slot + queue_wait_max_ms`, so waiting
+/// for a slot is never mistaken for waiting for a worker. Shared by first dispatch and retries.
+pub(crate) async fn enqueue_job_track(
+    conn: &mut PgConnection,
+    target: &DispatchTarget,
+    job_id: Uuid,
+    attempt: i32,
+    tracking_number: &str,
+    correlation_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let slot = if target.min_dispatch_interval_ms > 0 {
+        db::providers::reserve_dispatch_slot(conn, target.provider_id, now).await?
+    } else {
+        now
+    };
+    let queue_deadline_at = slot + Duration::milliseconds(i64::from(target.queue_wait_max_ms));
+    if slot > now {
+        sqlx::query("UPDATE tracking_jobs SET queue_deadline_at = $2 WHERE id = $1")
+            .bind(job_id)
+            .bind(queue_deadline_at)
+            .execute(&mut *conn)
+            .await?;
+    }
+    let message = job_track_message(
+        Uuid::now_v7(),
+        target,
+        job_id,
+        attempt,
+        tracking_number,
+        correlation_id,
+        now,
         queue_deadline_at,
     );
-    outbox::enqueue(
+    outbox::enqueue_at(
         conn,
         routing::JOBS_EXCHANGE,
         &routing::job_track(&target.adapter_key),
         &message,
+        slot,
     )
-    .await?;
-
-    Ok(Some(job.id))
+    .await
 }
 
 /// Builds the `job.track` message for one logical attempt.
@@ -282,6 +329,7 @@ pub fn job_track_message(
             timeout_ms: target.timeout_ms,
             // The queue-wait deadline; unrelated to timeout_ms.
             expires_at: queue_deadline_at,
+            credential_ref: target.credential_id,
         },
     )
 }

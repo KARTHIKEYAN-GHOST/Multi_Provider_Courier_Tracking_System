@@ -1,0 +1,13 @@
+{
+  "shipments": [
+    {
+      "id": "JD014600006281230704",
+      "service": "express",
+      "status": {
+        "timestamp": "2026-05-10T08:00:00Z",
+        "statusCode": "pre-transit",
+        "status": "Shipment information received"
+      }
+    }
+  ]
+}

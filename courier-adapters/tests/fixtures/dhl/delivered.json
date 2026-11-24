@@ -1,0 +1,39 @@
+{
+  "shipments": [
+    {
+      "id": "00340434292135100186",
+      "service": "ecommerce",
+      "origin": {"address": {"countryCode": "DE", "addressLocality": "Bonn"}},
+      "destination": {"address": {"countryCode": "IN", "addressLocality": "Chennai"}},
+      "status": {
+        "timestamp": "2026-03-04T14:05:00+05:30",
+        "location": {"address": {"countryCode": "IN", "postalCode": "600001", "addressLocality": "Chennai"}},
+        "statusCode": "delivered",
+        "status": "DELIVERED",
+        "description": "The shipment has been successfully delivered"
+      },
+      "events": [
+        {
+          "timestamp": "2026-03-04T14:05:00+05:30",
+          "location": {"address": {"countryCode": "IN", "postalCode": "600001", "addressLocality": "Chennai"}},
+          "statusCode": "delivered",
+          "status": "DELIVERED",
+          "description": "The shipment has been successfully delivered"
+        },
+        {
+          "timestamp": "2026-03-02T22:40:00Z",
+          "location": {"address": {"countryCode": "DE", "addressLocality": "Leipzig"}},
+          "statusCode": "transit",
+          "status": "IN TRANSIT",
+          "description": "The shipment has departed from the hub"
+        },
+        {
+          "timestamp": "2026-03-01T09:15:00",
+          "location": {"address": {"countryCode": "DE", "addressLocality": "Bonn"}},
+          "statusCode": "pre-transit",
+          "description": "Shipment information received"
+        }
+      ]
+    }
+  ]
+}

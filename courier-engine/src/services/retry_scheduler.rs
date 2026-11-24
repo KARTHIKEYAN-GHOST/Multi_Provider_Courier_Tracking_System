@@ -10,9 +10,8 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::dispatch::job_track_message;
-use crate::db::{providers::DispatchTarget, tracking};
-use crate::messaging::{outbox, routing};
+use super::dispatch::enqueue_job_track;
+use crate::db::{providers, tracking};
 
 #[derive(sqlx::FromRow)]
 struct DueJob {
@@ -20,13 +19,8 @@ struct DueJob {
     attempt: i32,
     correlation_id: Uuid,
     tracking_number: String,
-    provider_id: Uuid,
-    provider_code: String,
     adapter_id: Uuid,
-    adapter_key: String,
-    timeout_ms: i32,
     queue_wait_max_ms: i32,
-    max_attempts: i32,
 }
 
 /// Opens the next attempt for up to `limit` due jobs. Returns how many it opened.
@@ -35,12 +29,10 @@ pub async fn open_due_attempts(pool: &PgPool, limit: i64) -> Result<usize, sqlx:
     // SKIP LOCKED lets several scheduler instances run without ever picking the same job.
     let due = sqlx::query_as::<_, DueJob>(
         "SELECT j.id, j.attempt, j.correlation_id, s.tracking_number,
-                p.id AS provider_id, p.code AS provider_code, a.id AS adapter_id, a.key AS adapter_key,
-                p.timeout_ms, p.queue_wait_max_ms, j.max_attempts
+                j.adapter_id, p.queue_wait_max_ms
          FROM tracking_jobs j
          JOIN shipments s ON s.id = j.shipment_id
          JOIN providers p ON p.id = s.provider_id
-         JOIN adapters a ON a.id = j.adapter_id
          WHERE j.status = 'RETRYING' AND j.next_attempt_at <= clock_timestamp()
          ORDER BY j.next_attempt_at
          LIMIT $1
@@ -74,30 +66,17 @@ pub async fn open_due_attempts(pool: &PgPool, limit: i64) -> Result<usize, sqlx:
         .await?;
         tracking::insert_attempt(&mut tx, job.id, attempt, now).await?;
 
-        let target = DispatchTarget {
-            provider_id: job.provider_id,
-            provider_code: job.provider_code,
-            adapter_id: job.adapter_id,
-            adapter_key: job.adapter_key,
-            timeout_ms: job.timeout_ms,
-            queue_wait_max_ms: job.queue_wait_max_ms,
-            max_attempts: job.max_attempts,
-        };
-        let message = job_track_message(
-            Uuid::now_v7(),
+        let target = providers::dispatch_target_by_adapter(&mut tx, job.adapter_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        enqueue_job_track(
+            &mut tx,
             &target,
             job.id,
             attempt,
             &job.tracking_number,
             job.correlation_id,
             now,
-            queue_deadline_at,
-        );
-        outbox::enqueue(
-            &mut tx,
-            routing::JOBS_EXCHANGE,
-            &routing::job_track(&target.adapter_key),
-            &message,
         )
         .await?;
         tracing::info!(job_id = %job.id, attempt, correlation_id = %job.correlation_id, "retry attempt opened");

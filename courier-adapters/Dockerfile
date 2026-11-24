@@ -12,10 +12,11 @@ RUN uv sync --frozen --no-dev
 COPY courier-contracts/topology.yaml /app/courier-contracts/topology.yaml
 COPY courier-adapters/courier_adapter_sdk courier_adapter_sdk
 COPY courier-adapters/adapters adapters
+COPY courier-adapters/demo_site demo_site
 
 RUN useradd --system --uid 10001 --no-create-home worker
 USER worker
-# No secrets are baked in: WORKER_AMQP_URL comes from the environment.
+# No secrets are baked in: WORKER_AMQP_URL and WORKER_TOKEN come from the environment.
 # Which adapter runs is chosen by the command, e.g. "-m adapters.dummy".
 ENTRYPOINT ["/app/courier-adapters/.venv/bin/python"]
 CMD ["-m", "adapters.dummy"]

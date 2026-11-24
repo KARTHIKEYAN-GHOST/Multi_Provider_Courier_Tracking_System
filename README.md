@@ -5,6 +5,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/architecture.md](docs/architecture.md) — system-wide architecture
 - [docs/contracts.md](docs/contracts.md) — the messages between Engine and workers
 - [docs/milestone-1.md](docs/milestone-1.md) — Milestone 1 plan and acceptance criteria
+- [docs/phase-6.md](docs/phase-6.md) — credentials, the DHL and demo-site adapters, rate limiting
 
 ## Status
 
@@ -16,6 +17,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 3 — RabbitMQ integration (outbox relay, event and dead-letter consumers, retry scheduler, reaper) | done |
 | 4 — Adapter SDK and dummy adapter (worker runtime, concurrency, fault injection) | done |
 | 5 — First end-to-end integration (containers, end-to-end suite) | done |
+| 6 — Encrypted credentials and resolve API, DHL adapter, scraping adapter (demo site), provider rate limiting | done |
 
 ## Layout
 
@@ -23,7 +25,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 |---|---|
 | `courier-engine/` | Rust Engine: HTTP API, database migrations, business logic |
 | `courier-contracts/` | JSON Schemas, fixtures and RabbitMQ topology shared by Rust and Python |
-| `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts) and the dummy adapter |
+| `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts, credentials, HTTP), the dummy, DHL and demo-site adapters, and the demo courier website |
 | `infrastructure/` | Docker Compose, PostgreSQL and RabbitMQ configuration |
 | `tests-e2e/` | End-to-end tests: real Engine and worker processes on a private database and queues |
 | `docs/` | Architecture, contracts and plans |
@@ -43,9 +45,10 @@ make up-deps          # PostgreSQL + RabbitMQ, waits until healthy
 make verify-deps      # databases, vhost, users, permissions
 make migrate          # apply database migrations
 make test-engine      # Engine: fmt, clippy, unit + integration tests
-make test-adapters    # Adapter SDK + dummy adapter: ruff, mypy, pytest
-make test-e2e         # Engine + worker end to end (about 80 s)
-make up               # full stack in containers: + Engine + dummy worker
+make test-adapters    # Adapter SDK + adapters: ruff, mypy, pytest
+make test-e2e         # Engine + workers end to end (about 3 min)
+make up               # full stack in containers: + Engine, dummy and demo-site workers, demo website
+make master-key       # a new CREDENTIAL_MASTER_KEY (needed for DHL; see docs/phase-6.md)
 make smoke            # one tracking request through the containers
 make update-contract-fixtures   # only after intentionally changing a message the Engine sends
 make down             # stop (data kept); make destroy also deletes the volumes

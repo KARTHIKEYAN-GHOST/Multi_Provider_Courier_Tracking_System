@@ -24,6 +24,12 @@ pub enum ApiError {
         code: &'static str,
         message: &'static str,
     },
+    /// The caller is known but may not do this.
+    #[error("{message}")]
+    Forbidden {
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("request timed out")]
     Timeout,
     #[error("service unavailable: {0}")]
@@ -71,6 +77,9 @@ impl IntoResponse for ApiError {
             ),
             ApiError::Conflict { code, .. } => {
                 (StatusCode::CONFLICT, *code, self.to_string(), Value::Null)
+            }
+            ApiError::Forbidden { code, .. } => {
+                (StatusCode::FORBIDDEN, *code, self.to_string(), Value::Null)
             }
             ApiError::Timeout => (
                 StatusCode::GATEWAY_TIMEOUT,

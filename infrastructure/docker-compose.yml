@@ -1,8 +1,10 @@
-# Local stack: PostgreSQL, RabbitMQ, the Engine and the dummy adapter worker.
+# Local stack: PostgreSQL, RabbitMQ, the Engine, the dummy and demo-site adapter workers and
+# the demo courier website. The DHL worker is opt-in (it needs an API key and a worker token).
 #
 # Run through the Makefile, which supplies --env-file .env and the project name:
 #   make up-deps   PostgreSQL + RabbitMQ only (for development and the test suites)
-#   make up        everything
+#   make up        everything except DHL
+#   make up-dhl    additionally the DHL worker (see docs/phase-6.md)
 
 name: courier
 
@@ -68,6 +70,13 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ENGINE_AMQP_URL: amqp://${RABBITMQ_ENGINE_USER}:${RABBITMQ_ENGINE_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
       ENGINE_HTTP_ADDR: 0.0.0.0:8080
+      # Internal API (credential resolve) for adapter workers. Port 8081 is NOT published to
+      # the host: it is reachable only from other containers of this stack.
+      ENGINE_INTERNAL_ADDR: 0.0.0.0:8081
+      # Empty = no credential store: providers that need a credential stay unavailable.
+      CREDENTIAL_MASTER_KEY: ${CREDENTIAL_MASTER_KEY:-}
+      CREDENTIAL_KEY_VERSION: ${CREDENTIAL_KEY_VERSION:-1}
+      ENABLE_DUMMY_PROVIDER: ${ENABLE_DUMMY_PROVIDER:-true}
       LOG_FORMAT: json
     depends_on:
       postgres:
@@ -95,7 +104,7 @@ services:
 
   # The worker uses the restricted RabbitMQ account and has no database access at all.
   adapter-dummy:
-    build:
+    build: &worker-build
       context: ..
       dockerfile: courier-adapters/Dockerfile
     image: courier-adapter-worker:local
@@ -110,6 +119,60 @@ services:
     depends_on:
       engine:
         condition: service_healthy   # the Engine declares the queues the worker reads
+
+  # A small local courier website: the practice target of the scraping adapter. Not a real courier.
+  demo-site:
+    build: *worker-build
+    image: courier-adapter-worker:local
+    command: ["-m", "demo_site"]
+    restart: unless-stopped
+    environment:
+      DEMO_SITE_HOST: 0.0.0.0
+      DEMO_SITE_PORT: "8090"
+    healthcheck:
+      test: ["CMD", "/app/courier-adapters/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  # Scraping adapter. It contacts only the demo site above.
+  adapter-demosite:
+    build: *worker-build
+    image: courier-adapter-worker:local
+    command: ["-m", "adapters.demosite"]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    environment:
+      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      DEMOSITE_BASE_URL: http://demo-site:8090
+      LOG_FORMAT: json
+    depends_on:
+      engine:
+        condition: service_healthy
+      demo-site:
+        condition: service_healthy
+
+  # DHL adapter (official API). Started only with the "dhl" profile: make up-dhl.
+  # It holds no DHL key: it asks the Engine for it per job, identifying itself with its token.
+  adapter-dhl:
+    profiles: ["dhl"]
+    build: *worker-build
+    image: courier-adapter-worker:local
+    command: ["-m", "adapters.dhl"]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    environment:
+      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      WORKER_CONCURRENCY: ${DHL_WORKER_CONCURRENCY:-2}
+      WORKER_ENGINE_INTERNAL_URL: http://engine:8081
+      WORKER_TOKEN: ${DHL_WORKER_TOKEN:-}
+      DHL_BASE_URL: ${DHL_BASE_URL:-https://api-eu.dhl.com}
+      LOG_FORMAT: json
+    depends_on:
+      engine:
+        condition: service_healthy
 
 volumes:
   postgres-data:

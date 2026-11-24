@@ -43,7 +43,9 @@ PROVIDER_DEFAULTS = {
     "max_attempts": 3,
     "retry_base_ms": 300,
     "retry_max_ms": 3000,
+    "min_dispatch_interval_ms": 0,
 }
+PROVIDERS = ("dummy", "dhl", "demosite")
 TERMINAL = ("COMPLETED", "FAILED")
 
 
@@ -149,16 +151,21 @@ class Stack:
         self.prefix = f"e2e-{secrets.token_hex(5)}."
         self.log_dir = log_dir
         self.database_url = self._database_url(E2E_DATABASE)
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            self.port = probe.getsockname()[1]
+        self.port, self.internal_port, self.site_port = free_port(), free_port(), free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
+        self.internal_url = f"http://127.0.0.1:{self.internal_port}"
+        self.site_url = f"http://127.0.0.1:{self.site_port}"
+        # A master key that exists only for this run.
+        self.master_key = secrets.token_hex(32)
         engine_env = {
             **os.environ,
             "DATABASE_URL": self.database_url,
             "ENGINE_AMQP_URL": self.settings["ENGINE_AMQP_URL"],
             "ENGINE_HTTP_ADDR": f"127.0.0.1:{self.port}",
             "ENGINE_TOPOLOGY_PREFIX": self.prefix,
+            "ENGINE_INTERNAL_ADDR": f"127.0.0.1:{self.internal_port}",
+            "CREDENTIAL_MASTER_KEY": self.master_key,
+            "ENABLE_DUMMY_PROVIDER": "true",
             "LOG_FORMAT": "json",
             "OUTBOX_POLL_MS": "50",
             "RETRY_SCHEDULER_INTERVAL_MS": "100",
@@ -185,13 +192,34 @@ class Stack:
             "WORKER_ID": "e2e-worker",
             "LOG_FORMAT": "json",
         }
-        self.worker = Supervised(
-            "worker",
-            [str(ADAPTERS_DIR / ".venv" / "bin" / "python"), "-m", "adapters.dummy"],
+        python = str(ADAPTERS_DIR / ".venv" / "bin" / "python")
+
+        def worker(adapter: str, **extra: str) -> Supervised:
+            env = {**worker_env, "WORKER_ID": f"e2e-{adapter}", **extra}
+            return Supervised(
+                adapter,
+                [python, "-m", f"adapters.{adapter}"],
+                ADAPTERS_DIR,
+                env,
+                log_dir / f"worker-{adapter}.log",
+                True,
+            )
+
+        self.workers = {
+            "dummy": worker("dummy", WORKER_ID="e2e-worker"),
+            # The scraping adapter is pointed at the demo courier website started below.
+            "demosite": worker("demosite", DEMOSITE_BASE_URL=self.site_url),
+            # The DHL adapter is pointed at the test's fake DHL API; its token is set per test.
+            "dhl": worker("dhl", WORKER_ENGINE_INTERNAL_URL=self.internal_url),
+        }
+        self.worker = self.workers["dummy"]
+        self.site = Supervised(
+            "demo-site",
+            [python, "-m", "demo_site"],
             ADAPTERS_DIR,
-            worker_env,
-            log_dir / "worker.log",
-            restart=True,
+            {**os.environ, "DEMO_SITE_PORT": str(self.site_port)},
+            log_dir / "demo-site.log",
+            restart=False,
         )
         self._management = httpx.Client(
             base_url=f"http://127.0.0.1:{self.settings['RABBITMQ_MGMT_HOST_PORT']}/api",
@@ -219,27 +247,45 @@ class Stack:
             check=True,
             capture_output=True,
         )
-        self.set_provider(**PROVIDER_DEFAULTS)
+        for code in PROVIDERS:
+            self.set_provider(code, **PROVIDER_DEFAULTS)
 
     def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         """Read-only look into the Engine's database, for assertions."""
         with psycopg.connect(self.database_url, row_factory=dict_row) as connection:
             return connection.execute(sql, params).fetchall()
 
-    def set_provider(self, **timings: int) -> None:
+    def set_provider(self, code: str = "dummy", **timings: int) -> None:
+        assert code in PROVIDERS
         assert set(timings) <= set(PROVIDER_DEFAULTS)
         assignments = ", ".join(f"{column} = %s" for column in timings)
         with psycopg.connect(self.database_url, autocommit=True) as connection:
-            connection.execute(f"UPDATE providers SET {assignments} WHERE code = 'dummy'", list(timings.values()))
+            connection.execute(
+                f"UPDATE providers SET {assignments}, next_dispatch_at = NULL WHERE code = %s",
+                [*timings.values(), code],
+            )
 
     @contextmanager
-    def provider(self, **timings: int) -> Iterator[None]:
-        """Temporarily different timings for the dummy provider."""
-        self.set_provider(**timings)
+    def provider(self, code: str = "dummy", **timings: int) -> Iterator[None]:
+        """Temporarily different timings for a provider."""
+        self.set_provider(code, **timings)
         try:
             yield
         finally:
-            self.set_provider(**PROVIDER_DEFAULTS)
+            self.set_provider(code, **PROVIDER_DEFAULTS)
+
+    def admin(self, *arguments: str, stdin: str | None = None) -> str:
+        """Runs an Engine admin command and returns what it printed."""
+        done = subprocess.run(
+            [self.engine_binary, "admin", *arguments],
+            cwd=ENGINE_DIR,
+            env=self._engine_env,
+            input=stdin,
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
 
     # ------------------------------------------------------------------ processes
 
@@ -253,9 +299,28 @@ class Stack:
         except httpx.HTTPError:
             return False
 
-    def start_worker(self, concurrency: int = 4) -> None:
-        self.worker.start(WORKER_CONCURRENCY=str(concurrency))
-        wait_until(lambda: self.consumers("adapter.dummy.jobs") > 0, 30, "the worker to consume")
+    def start_worker(self, concurrency: int = 4, adapter: str = "dummy", **env: str) -> None:
+        self.workers[adapter].start(WORKER_CONCURRENCY=str(concurrency), **env)
+        wait_until(lambda: self.consumers(f"adapter.{adapter}.jobs") > 0, 30, f"the {adapter} worker to consume")
+
+    def stop_worker(self, adapter: str) -> None:
+        self.workers[adapter].stop()
+        wait_until(lambda: self.consumers(f"adapter.{adapter}.jobs") == 0, 10, f"the {adapter} worker to disconnect")
+
+    def start_site(self) -> None:
+        self.site.start()
+        wait_until(lambda: self._up(f"{self.site_url}/healthz"), 15, "the demo courier website")
+
+    @staticmethod
+    def _up(url: str) -> bool:
+        try:
+            return httpx.get(url, timeout=2).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def log_files(self) -> dict[str, str]:
+        """Every log the run has written so far, by file name."""
+        return {path.name: path.read_text(encoding="utf-8", errors="replace") for path in self.log_dir.glob("*.log")}
 
     def restart_worker(self, concurrency: int = 4, purge: bool = False) -> None:
         self.worker.stop()
@@ -322,7 +387,9 @@ class Stack:
         return User(self, email, key)
 
     def shutdown(self) -> None:
-        self.worker.stop()
+        for worker in self.workers.values():
+            worker.stop()
+        self.site.stop()
         self.engine.stop()
         self.delete_topology()
         self._management.close()
@@ -337,12 +404,14 @@ class User:
             base_url=f"{stack.base_url}/v1", headers={"Authorization": f"Bearer {api_key}"}, timeout=15
         )
 
-    def track(self, tracking_number: str) -> httpx.Response:
-        return self.http.post("/tracking-requests", json={"provider_code": "dummy", "tracking_number": tracking_number})
+    def track(self, tracking_number: str, provider: str = "dummy") -> httpx.Response:
+        return self.http.post(
+            "/tracking-requests", json={"provider_code": provider, "tracking_number": tracking_number}
+        )
 
-    def submit(self, tracking_number: str) -> str:
+    def submit(self, tracking_number: str, provider: str = "dummy") -> str:
         """Creates a tracking request and returns its ID."""
-        response = self.track(tracking_number)
+        response = self.track(tracking_number, provider)
         assert response.status_code in (200, 201), response.text
         return str(response.json()["id"])
 
@@ -368,6 +437,12 @@ class User:
         return wait_until(probe, timeout_s, f"job of {request_id} to be {' or '.join(wanted)}")
 
 
-def number(kind: str) -> str:
-    """A unique tracking number with the given dummy behaviour, e.g. ``DUMMY-OK-3f9a1c``."""
-    return f"DUMMY-{kind}-{secrets.token_hex(4).upper()}"  # the Engine stores numbers in upper case
+def number(kind: str, family: str = "DUMMY") -> str:
+    """A unique tracking number with the given behaviour, e.g. ``DUMMY-OK-3F9A1C02``."""
+    return f"{family}-{kind}-{secrets.token_hex(4).upper()}"
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])  # the Engine stores numbers in upper case

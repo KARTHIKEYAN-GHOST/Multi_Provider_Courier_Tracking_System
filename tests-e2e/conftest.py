@@ -19,6 +19,8 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
     try:
         instance.start_engine()
         instance.start_worker()
+        instance.start_site()
+        instance.start_worker(adapter="demosite")
         yield instance
     finally:
         instance.shutdown()

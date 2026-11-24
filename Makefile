@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up smoke test-e2e
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl smoke test-e2e master-key run-demo-site
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -30,8 +30,17 @@ up-deps: env ## Start PostgreSQL and RabbitMQ and wait until both are healthy
 verify-deps: env ## Check databases, RabbitMQ vhost, users and permissions
 	bash infrastructure/verify-deps.sh "$(DOCKER)"
 
-up: env ## Build and start the full stack: PostgreSQL, RabbitMQ, Engine and dummy worker
+up: env ## Build and start the stack: PostgreSQL, RabbitMQ, Engine, dummy + demo-site workers, demo courier website
 	$(COMPOSE) up -d --build --wait
+
+up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY and DHL_WORKER_TOKEN in .env; see docs/phase-6.md)
+	$(COMPOSE) --profile dhl up -d --build --wait
+
+master-key: ## Print a new random master key for CREDENTIAL_MASTER_KEY (shown once; nothing is stored)
+	@cd courier-engine && cargo run --quiet -- admin generate-master-key
+
+run-demo-site: ## Run the demo courier website on http://127.0.0.1:8090 (target of the demo-site adapter)
+	cd courier-adapters && uv run python -m demo_site
 
 smoke: env ## Check the running full stack (make up) with one real tracking request
 	bash infrastructure/smoke.sh "$(DOCKER)"
@@ -67,7 +76,7 @@ update-contract-fixtures: ## Regenerate the Engine-produced contract fixtures (d
 	cd courier-engine && UPDATE_CONTRACT_FIXTURES=1 cargo test --quiet --test contracts the_engines_job_track_message
 	$(MAKE) test-contracts
 
-test-adapters: env ## Adapter SDK and dummy adapter: ruff, mypy, pytest (needs RabbitMQ: make up-deps)
+test-adapters: env ## Adapter SDK and adapters (dummy, dhl, demosite): ruff, mypy, pytest (needs RabbitMQ: make up-deps)
 	cd courier-adapters && uv run ruff format --check .
 	cd courier-adapters && uv run ruff check .
 	cd courier-adapters && uv run mypy

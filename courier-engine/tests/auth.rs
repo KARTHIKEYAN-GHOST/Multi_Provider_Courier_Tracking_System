@@ -45,7 +45,13 @@ async fn a_valid_key_is_accepted(pool: PgPool) {
     let (_, key) = user(&pool, "a@example.com").await;
     let reply = get(&app(&pool), "/v1/providers", &key).await;
     assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(reply.body["items"][0]["code"], "dummy");
+    let codes: Vec<&str> = reply.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["demosite", "dhl", "dummy"]);
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

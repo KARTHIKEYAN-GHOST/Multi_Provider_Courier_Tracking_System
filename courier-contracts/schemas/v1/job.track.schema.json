@@ -36,6 +36,10 @@
         "expires_at": {
           "description": "Queue-wait deadline. A worker drops a FIRST delivery received after this instant; redeliveries are always executed. Independent of timeout_ms.",
           "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "credential_ref": {
+          "description": "Opaque reference to the credential the adapter needs; never the secret. The worker exchanges it for the secret over the Engine's internal API. Absent when no credential is needed.",
+          "$ref": "common.schema.json#/$defs/uuid"
         }
       }
     }

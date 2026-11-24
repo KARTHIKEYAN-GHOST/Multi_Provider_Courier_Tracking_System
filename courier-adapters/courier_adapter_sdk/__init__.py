@@ -3,6 +3,7 @@
 from .base import Adapter, TrackingResult, TrackRequest
 from .context import JobContext
 from .contracts import Location, RawResponse, TrackingEvent
+from .credentials import CredentialDenied, Secret
 from .errors import (
     AdapterError,
     AuthExpired,
@@ -24,6 +25,7 @@ __all__ = [
     "AuthExpired",
     "AuthInvalid",
     "Blocked",
+    "CredentialDenied",
     "JobContext",
     "Location",
     "NetworkConnectError",
@@ -33,6 +35,7 @@ __all__ = [
     "RateLimited",
     "RawResponse",
     "SchemaDrift",
+    "Secret",
     "ShipmentNotFound",
     "TrackRequest",
     "TrackingEvent",

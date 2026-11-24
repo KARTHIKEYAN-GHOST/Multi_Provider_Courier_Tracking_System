@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod dto;
 pub mod health;
+pub mod internal;
 pub mod providers;
 pub mod tracking_requests;
 
@@ -72,7 +73,7 @@ pub fn router(state: AppState) -> Router {
 ///
 /// A caller may supply its own `X-Correlation-Id` (must be a UUID); otherwise one is generated.
 /// Request headers and bodies are never logged, so API keys cannot leak into logs.
-async fn request_context(
+pub(crate) async fn request_context(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,

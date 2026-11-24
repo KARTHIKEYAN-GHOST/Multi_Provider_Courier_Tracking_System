@@ -55,6 +55,7 @@ Every message is wrapped in the same envelope.
 | `tracking_number`, `params` | What to look up (`params` is non-secret) |
 | `timeout_ms` | Adapter execution budget, counted from the moment the worker starts executing |
 | `expires_at` | Queue-wait deadline. A worker drops a *first* delivery that arrives later than this. |
+| `credential_ref` | Optional. Opaque ID the worker exchanges for the provider's secret over the Engine's internal API (see [phase-6.md](phase-6.md)). Never the secret itself; absent when the provider has no stored credential. |
 
 ### `job.started` and `job.result`
 

@@ -18,6 +18,9 @@ use crate::{
         api_keys,
         background::{run_reaper, run_retry_scheduler},
         close_attempt::RetryPolicy,
+        credentials::{self, PgSecretStore},
+        crypto::MasterKey,
+        worker_tokens,
     },
     state::AppState,
     telemetry,
@@ -61,10 +64,67 @@ enum AdminCommand {
         #[arg(long)]
         prefix: String,
     },
+    /// Print a new random master key for CREDENTIAL_MASTER_KEY
+    GenerateMasterKey,
+    /// Store a provider's credential, replacing the one in use. The secret is a JSON object
+    /// such as {"api_key": "..."} read from standard input, so it never appears in the
+    /// shell history or the process list.
+    SetCredential {
+        #[arg(long)]
+        provider: String,
+        /// A name for the operator, for example "production key 2026"
+        #[arg(long, default_value = "default")]
+        label: String,
+    },
+    /// Revoke the provider's credential in use
+    RevokeCredential {
+        #[arg(long)]
+        provider: String,
+    },
+    /// List stored credentials (never their secrets)
+    ListCredentials,
+    /// Create a token that lets a worker of one adapter resolve credentials (shown once)
+    CreateWorkerToken {
+        #[arg(long)]
+        adapter: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Revoke a worker token by its prefix
+    RevokeWorkerToken {
+        #[arg(long)]
+        prefix: String,
+    },
+    /// Record whether the owner of a provider's website has permitted scraping it
+    SetScrapingAuthorized {
+        #[arg(long)]
+        provider: String,
+        #[arg(long, action = clap::ArgAction::Set)]
+        authorized: bool,
+    },
+}
+
+/// The credential store, if a master key is configured.
+fn secret_store(config: &Config) -> anyhow::Result<Option<PgSecretStore>> {
+    let Some(hex_key) = config
+        .credential_master_key
+        .as_deref()
+        .filter(|k| !k.is_empty())
+    else {
+        return Ok(None);
+    };
+    let master = MasterKey::from_hex(hex_key, config.credential_key_version)
+        .context("CREDENTIAL_MASTER_KEY is not usable")?;
+    Ok(Some(PgSecretStore::new(master)))
 }
 
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Admin(AdminCommand::GenerateMasterKey)) = &cli.command {
+        // Needs neither configuration nor a database.
+        println!("{}", MasterKey::generate_hex());
+        return Ok(());
+    }
     let config = Config::from_env()?;
     telemetry::init(&config.log_format);
 
@@ -79,7 +139,7 @@ pub async fn run() -> anyhow::Result<()> {
             println!("migrations applied");
             Ok(())
         }
-        Command::Admin(command) => admin(&pool, command).await,
+        Command::Admin(command) => admin(&pool, &config, command).await,
     }
 }
 
@@ -125,8 +185,50 @@ async fn serve(pool: PgPool, config: Config) -> anyhow::Result<()> {
         shutdown.clone(),
     ));
 
+    // ENABLE_DUMMY_PROVIDER decides whether the test providers are offered at all.
+    let changed =
+        db::providers::set_test_providers_enabled(&pool, config.enable_dummy_provider).await?;
+    tracing::info!(
+        enabled = config.enable_dummy_provider,
+        changed,
+        "test providers switched according to ENABLE_DUMMY_PROVIDER"
+    );
+
     let addr = config.engine_http_addr.clone();
-    let app = api::router(AppState::new(pool, config).with_broker(health));
+    let internal_addr = config
+        .engine_internal_addr
+        .clone()
+        .filter(|a| !a.is_empty());
+    let mut state = AppState::new(pool, config.clone()).with_broker(health);
+    if let Some(store) = secret_store(&config)? {
+        state = state.with_secrets(store);
+    }
+
+    // The internal API (credential resolve for workers) has its own listener, so it can be
+    // kept off any network that users can reach.
+    if let Some(internal_addr) = internal_addr {
+        if state.secrets.is_none() {
+            tracing::warn!(
+                "ENGINE_INTERNAL_ADDR is set but CREDENTIAL_MASTER_KEY is not: credentials cannot be resolved"
+            );
+        }
+        let listener = tokio::net::TcpListener::bind(&internal_addr)
+            .await
+            .with_context(|| format!("cannot listen on {internal_addr}"))?;
+        tracing::info!(addr = %internal_addr, "internal API listening");
+        let app = api::internal::router(state.clone());
+        let stop = shutdown.clone();
+        background.spawn(async move {
+            if let Err(error) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move { stop.cancelled().await })
+                .await
+            {
+                tracing::error!(%error, "internal API stopped with an error");
+            }
+        });
+    }
+
+    let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("cannot listen on {addr}"))?;
@@ -178,7 +280,7 @@ fn normalize_email(raw: &str) -> anyhow::Result<String> {
 
 /// Admin commands print results to stdout. The API key is printed exactly once and is
 /// never written to the log.
-async fn admin(pool: &PgPool, command: AdminCommand) -> anyhow::Result<()> {
+async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow::Result<()> {
     match command {
         AdminCommand::CreateUser { email } => {
             let email = normalize_email(&email)?;
@@ -202,6 +304,92 @@ async fn admin(pool: &PgPool, command: AdminCommand) -> anyhow::Result<()> {
             let key = api_keys::issue(pool, user_id, name.as_deref()).await?;
             println!("api_key: {key}");
             println!("Store this key now. It cannot be shown again.");
+        }
+        AdminCommand::GenerateMasterKey => unreachable!("handled before the database is opened"),
+        AdminCommand::SetCredential { provider, label } => {
+            let store = secret_store(config)?
+                .context("CREDENTIAL_MASTER_KEY is not set; credentials cannot be stored")?;
+            let mut input = String::new();
+            std::io::Read::read_to_string(
+                &mut std::io::Read::take(std::io::stdin(), 64 * 1024),
+                &mut input,
+            )
+            .context("cannot read the secret from standard input")?;
+            // A parse error is reported without the input, which may contain the secret.
+            let secret: credentials::SecretFields =
+                serde_json::from_str(input.trim()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "standard input must be a JSON object, for example {{\"api_key\": \"...\"}}"
+                    )
+                })?;
+            let id = credentials::set_credential(pool, &store, &provider, &label, &secret).await?;
+            println!("credential_id: {id}");
+            println!("The previous credential of this provider, if any, has been revoked.");
+        }
+        AdminCommand::RevokeCredential { provider } => {
+            if !credentials::revoke_credential(pool, &provider).await? {
+                bail!("this provider has no credential in use");
+            }
+            println!("revoked");
+        }
+        AdminCommand::ListCredentials => {
+            for c in credentials::list_credentials(pool).await? {
+                let state = match c.revoked_at {
+                    Some(at) => format!("revoked {}", at.format("%Y-%m-%d")),
+                    None => "in use".to_string(),
+                };
+                println!(
+                    "{}  {:<12} {:<24} key v{}  created {}  {}",
+                    c.id,
+                    c.provider_code,
+                    c.label,
+                    c.key_version,
+                    c.created_at.format("%Y-%m-%d"),
+                    state
+                );
+            }
+        }
+        AdminCommand::CreateWorkerToken { adapter, name } => {
+            let Some(token) = worker_tokens::issue(pool, &adapter, name.as_deref()).await? else {
+                bail!("no adapter with this key");
+            };
+            println!("worker_token: {token}");
+            println!("Store this token now. It cannot be shown again.");
+        }
+        AdminCommand::RevokeWorkerToken { prefix } => {
+            if !worker_tokens::revoke_by_prefix(pool, &prefix).await? {
+                bail!("no active worker token with this prefix");
+            }
+            println!("revoked");
+        }
+        AdminCommand::SetScrapingAuthorized {
+            provider,
+            authorized,
+        } => {
+            let mut tx = pool.begin().await?;
+            let Some(provider_id) = sqlx::query_scalar::<_, uuid::Uuid>(
+                "UPDATE providers SET scraping_authorized = $2, updated_at = now() WHERE code = $1 RETURNING id",
+            )
+            .bind(&provider)
+            .bind(authorized)
+            .fetch_optional(&mut *tx)
+            .await?
+            else {
+                bail!("no provider with this code");
+            };
+            credentials::audit(
+                &mut tx,
+                credentials::Audit {
+                    actor_type: "admin",
+                    action: "provider.scraping_authorized",
+                    provider_id: Some(provider_id),
+                    details: Some(serde_json::json!({ "authorized": authorized })),
+                    ..credentials::Audit::default()
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            println!("scraping_authorized = {authorized} for {provider}");
         }
         AdminCommand::RevokeApiKey { prefix } => {
             if db::api_keys::revoke_by_prefix(pool, &prefix).await? {

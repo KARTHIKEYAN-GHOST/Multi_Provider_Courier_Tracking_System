@@ -16,6 +16,11 @@ class WorkerSettings(BaseSettings):
 
     #: Connection string of the restricted adapter-worker account. A secret: never logged.
     worker_amqp_url: SecretStr
+    #: Base URL of the Engine's internal API, e.g. http://engine:8081. Needed only by adapters
+    #: that use credentials.
+    worker_engine_internal_url: str = ""
+    #: This worker's token for the internal API. A secret: never logged.
+    worker_token: SecretStr | None = None
     #: How many jobs run at the same time in this process.
     worker_concurrency: int = Field(default=4, ge=1, le=256)
     #: Unacknowledged messages RabbitMQ may hand this worker. Defaults to the concurrency.

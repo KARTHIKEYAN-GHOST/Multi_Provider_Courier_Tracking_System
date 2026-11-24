@@ -86,7 +86,7 @@ async fn a_queued_job_cannot_be_inserted_without_a_queue_deadline(pool: PgPool) 
             &pool,
             "INSERT INTO tracking_jobs (id, shipment_id, adapter_id, trigger, status, max_attempts, correlation_id)
              SELECT gen_random_uuid(), s.id, a.id, 'manual', 'QUEUED', 3, gen_random_uuid()
-             FROM shipments s, adapters a",
+             FROM shipments s, adapters a WHERE a.key = 'dummy'",
         )
         .await,
         "ck_jobs_queued_has_queue_deadline"
@@ -163,7 +163,7 @@ async fn attempt_and_dead_letter_counters_stay_in_range(pool: PgPool) {
 const INSERT_JOB_ONLY: &str =
     "INSERT INTO tracking_jobs (id, shipment_id, adapter_id, trigger, status, max_attempts, queue_deadline_at, correlation_id)
      SELECT gen_random_uuid(), s.id, a.id, 'manual', 'QUEUED', 3, now(), gen_random_uuid()
-     FROM shipments s, adapters a WHERE s.archived_at IS NULL";
+     FROM shipments s, adapters a WHERE a.key = 'dummy' AND s.archived_at IS NULL";
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_job_cannot_be_committed_without_its_attempt_row(pool: PgPool) {
@@ -248,7 +248,7 @@ async fn no_job_can_be_inserted_for_an_archived_shipment(pool: PgPool) {
             &pool,
             "INSERT INTO tracking_jobs (id, shipment_id, adapter_id, trigger, status, max_attempts, queue_deadline_at, correlation_id)
              SELECT gen_random_uuid(), s.id, a.id, 'manual', 'QUEUED', 3, now(), gen_random_uuid()
-             FROM shipments s, adapters a",
+             FROM shipments s, adapters a WHERE a.key = 'dummy'",
         )
         .await,
         "no_job_on_archived_shipment"
@@ -377,7 +377,7 @@ async fn an_outbox_row_must_agree_with_itself_and_with_its_envelope(pool: PgPool
 async fn a_provider_has_at_most_one_enabled_adapter(pool: PgPool) {
     const SECOND_ADAPTER: &str =
         "INSERT INTO adapters (id, provider_id, key, method, queue_name, enabled)
-         SELECT gen_random_uuid(), id, 'dummy_two', 'api', 'adapter.dummy_two.jobs', true FROM providers";
+         SELECT gen_random_uuid(), id, 'dummy_two', 'api', 'adapter.dummy_two.jobs', true FROM providers WHERE code = 'dummy'";
     assert_eq!(
         rejected_by(&pool, SECOND_ADAPTER).await,
         "ux_adapters_one_enabled_per_provider"
@@ -386,7 +386,7 @@ async fn a_provider_has_at_most_one_enabled_adapter(pool: PgPool) {
     accepted(
         &pool,
         "INSERT INTO adapters (id, provider_id, key, method, queue_name, enabled)
-         SELECT gen_random_uuid(), id, 'dummy_two', 'api', 'adapter.dummy_two.jobs', false FROM providers",
+         SELECT gen_random_uuid(), id, 'dummy_two', 'api', 'adapter.dummy_two.jobs', false FROM providers WHERE code = 'dummy'",
     )
     .await;
     assert_eq!(

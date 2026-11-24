@@ -20,3 +20,6 @@ __pycache__/
 .vscode/
 *.swp
 .DS_Store
+
+# Generated project guide (rebuild with docs/build_guide_pdf.py)
+Courier-Tracking-System-Guide.pdf

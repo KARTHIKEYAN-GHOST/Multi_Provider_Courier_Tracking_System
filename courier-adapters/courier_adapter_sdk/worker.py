@@ -58,6 +58,7 @@ from .contracts import (
     new_id,
     utc_now,
 )
+from .credentials import CredentialResolver, HttpCredentialResolver
 from .errors import ShipmentNotFound, describe
 from .logging import get_logger
 from .testing import FaultInjection, SimulateCrash, SimulateDuplicateResult, SimulateHang
@@ -119,11 +120,13 @@ class Worker:
         settings: WorkerSettings,
         publisher: EventPublisher,
         *,
+        resolver: CredentialResolver | None = None,
         exit_process: Callable[[int], NoReturn] = _hard_exit,
     ) -> None:
         self.adapter = adapter
         self.settings = settings
         self.publisher = publisher
+        self.resolver = resolver
         self.worker_id = settings.worker_id or f"{adapter.key}-{secrets.token_hex(4)}"
         self.log = get_logger(worker_id=self.worker_id, adapter_key=adapter.key)
         self._slots = asyncio.Semaphore(settings.worker_concurrency)
@@ -186,6 +189,8 @@ class Worker:
             delivery_count=execution.delivery_count,
             correlation_id=execution.envelope.correlation_id,
             log=execution.log,
+            credential_ref=job.credential_ref,
+            _resolver=self.resolver,
         )
         started_at = utc_now()
         clock = time.monotonic()
@@ -455,6 +460,12 @@ class WorkerProcess:
         self.settings = settings
         self.routes = routes_for(adapter.key, settings.topology_path, settings.worker_topology_prefix)
         self.log = get_logger(adapter_key=adapter.key)
+        # One resolver (and connection pool) for the whole process, if the worker has a token.
+        self.resolver: HttpCredentialResolver | None = None
+        if settings.worker_engine_internal_url and settings.worker_token is not None:
+            self.resolver = HttpCredentialResolver(
+                settings.worker_engine_internal_url, settings.worker_token.get_secret_value()
+            )
         self._stopping = asyncio.Event()
         self._exit_process = exit_process
         #: Set while a session is consuming. Tests wait on it.
@@ -483,6 +494,8 @@ class WorkerProcess:
                 delay = min(delay * 2, 15.0)
         finally:
             await self.adapter.shutdown()
+            if self.resolver is not None:
+                await self.resolver.aclose()
             self.log.info("worker_stopped")
 
     async def _sleep_or_stop(self, seconds: float) -> None:
@@ -498,6 +511,7 @@ class WorkerProcess:
                 self.adapter,
                 self.settings,
                 AmqpPublisher(exchange, self.routes),
+                resolver=self.resolver,
                 exit_process=self._exit_process,
             )
 

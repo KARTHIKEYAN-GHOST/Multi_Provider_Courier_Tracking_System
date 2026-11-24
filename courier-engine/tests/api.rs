@@ -32,7 +32,10 @@ async fn migrations_are_a_no_op_when_applied_again(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(providers, 1, "the seed must not be applied twice");
+    assert_eq!(
+        providers, 3,
+        "the seeds (dummy, dhl, demosite) must not be applied twice"
+    );
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

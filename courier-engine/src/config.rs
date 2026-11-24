@@ -39,6 +39,26 @@ pub struct Config {
     /// tests set it so that they never touch the real queues.
     #[serde(default)]
     pub engine_topology_prefix: String,
+    /// Address of the internal API that workers use to resolve credentials. It must not be
+    /// reachable from outside the deployment. Not started when unset.
+    #[serde(default)]
+    pub engine_internal_addr: Option<String>,
+    /// Master key for stored credentials: 64 hexadecimal characters. A secret.
+    #[serde(default)]
+    pub credential_master_key: Option<String>,
+    /// Version number of the master key above; stored with every credential it encrypts.
+    #[serde(default = "default_credential_key_version")]
+    pub credential_key_version: i32,
+    /// Whether the test providers (dummy, demosite) are offered. Set to false in production.
+    #[serde(default = "default_enable_dummy_provider")]
+    pub enable_dummy_provider: bool,
+}
+
+fn default_credential_key_version() -> i32 {
+    1
+}
+fn default_enable_dummy_provider() -> bool {
+    true
 }
 
 fn default_outbox_poll_ms() -> u64 {
@@ -97,6 +117,13 @@ impl std::fmt::Debug for Config {
             .field("reaper_interval_ms", &self.reaper_interval_ms)
             .field("max_dead_letter_retries", &self.max_dead_letter_retries)
             .field("engine_topology_prefix", &self.engine_topology_prefix)
+            .field("engine_internal_addr", &self.engine_internal_addr)
+            .field(
+                "credential_master_key",
+                &self.credential_master_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("credential_key_version", &self.credential_key_version)
+            .field("enable_dummy_provider", &self.enable_dummy_provider)
             .finish()
     }
 }
@@ -124,6 +151,10 @@ impl Config {
             reaper_interval_ms: default_reaper_interval_ms(),
             max_dead_letter_retries: default_max_dead_letter_retries(),
             engine_topology_prefix: String::new(),
+            engine_internal_addr: None,
+            credential_master_key: None,
+            credential_key_version: default_credential_key_version(),
+            enable_dummy_provider: default_enable_dummy_provider(),
         }
     }
 }
@@ -138,10 +169,12 @@ mod tests {
         config.database_url = "postgres://courier:s3cret-pass@db.internal:5432/courier".to_string();
         config.engine_amqp_url =
             Some("amqp://engine:s3cret-pass@mq.internal:5672/courier".to_string());
+        config.credential_master_key = Some("ab".repeat(32));
         let printed = format!("{config:?} {config:#?}");
         assert!(!printed.contains("s3cret-pass"));
         assert!(!printed.contains("postgres://"));
         assert!(!printed.contains("amqp://"));
+        assert!(!printed.contains("abab"));
         assert!(printed.contains("[redacted]"));
         assert!(printed.contains("engine_http_addr"));
     }

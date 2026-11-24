@@ -138,7 +138,11 @@ mod tests {
         let dead = topology.queues_for(DEAD_LETTER_CONSUMER);
         assert_eq!(
             dead.iter().map(|q| q.name.as_str()).collect::<Vec<_>>(),
-            ["adapter.dummy.jobs.dlq"]
+            [
+                "adapter.dummy.jobs.dlq",
+                "adapter.dhl.jobs.dlq",
+                "adapter.demosite.jobs.dlq"
+            ]
         );
         // The parked queue has no Engine consumer.
         assert!(

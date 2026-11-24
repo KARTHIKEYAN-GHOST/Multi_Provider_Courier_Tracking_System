@@ -46,7 +46,8 @@ impl From<DispatchError> for ApiError {
             },
             DispatchError::ProviderUnavailable => ApiError::Conflict {
                 code: "provider_unavailable",
-                message: "the provider for this shipment is currently disabled",
+                message: "the provider cannot be used at the moment: it is disabled, not authorized \
+                          for scraping, or has no credential stored",
             },
             DispatchError::Database(e) => e.into(),
         }
