@@ -1,0 +1,19 @@
+{
+  "message_id": "019355a0-0000-7000-8000-000000000010",
+  "type": "job.track",
+  "schema_version": "1.0",
+  "occurred_at": "2026-11-24T10:00:00.123456Z",
+  "correlation_id": "019355a0-0000-7000-8000-000000000030",
+  "causation_id": null,
+  "producer": "engine@0.1.0",
+  "payload": {
+    "job_id": "019355a0-0000-7000-8000-000000000020",
+    "attempt": 1,
+    "adapter_key": "dummy",
+    "provider_code": "dummy",
+    "tracking_number": "DUMMY-OK-1",
+    "params": {},
+    "timeout_ms": 10000,
+    "expires_at": "2026-11-24T10:15:00.123456Z"
+  }
+}

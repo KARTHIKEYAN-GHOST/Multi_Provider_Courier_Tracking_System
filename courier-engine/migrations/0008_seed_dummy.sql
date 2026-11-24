@@ -1,0 +1,19 @@
+-- The dummy provider and adapter used by Milestone 1. No users or API keys are seeded.
+INSERT INTO providers (id, code, name, tracking_method, timeout_ms, queue_wait_max_ms, result_grace_ms,
+                       max_attempts, retry_base_ms, retry_max_ms)
+VALUES ('01900000-0000-7000-8000-000000000001', 'dummy', 'Dummy Courier', 'api',
+        10000, 900000, 30000, 3, 1000, 60000);
+
+INSERT INTO adapters (id, provider_id, key, method, queue_name)
+VALUES ('01900000-0000-7000-8000-000000000002', '01900000-0000-7000-8000-000000000001',
+        'dummy', 'api', 'adapter.dummy.jobs');
+
+INSERT INTO provider_status_mappings (id, provider_id, raw_status, normalized_status)
+VALUES
+    ('01900000-0000-7000-8000-000000000011', '01900000-0000-7000-8000-000000000001', 'PKG_CREATED',          'CREATED'),
+    ('01900000-0000-7000-8000-000000000012', '01900000-0000-7000-8000-000000000001', 'PKG_PICKED_UP',        'PICKED_UP'),
+    ('01900000-0000-7000-8000-000000000013', '01900000-0000-7000-8000-000000000001', 'PKG_IN_TRANSIT',       'IN_TRANSIT'),
+    ('01900000-0000-7000-8000-000000000014', '01900000-0000-7000-8000-000000000001', 'PKG_OUT_FOR_DELIVERY', 'OUT_FOR_DELIVERY'),
+    ('01900000-0000-7000-8000-000000000015', '01900000-0000-7000-8000-000000000001', 'PKG_DELIVERED',        'DELIVERED'),
+    ('01900000-0000-7000-8000-000000000016', '01900000-0000-7000-8000-000000000001', 'PKG_RETURNED',         'RETURNED'),
+    ('01900000-0000-7000-8000-000000000017', '01900000-0000-7000-8000-000000000001', 'PKG_EXCEPTION',        'EXCEPTION');

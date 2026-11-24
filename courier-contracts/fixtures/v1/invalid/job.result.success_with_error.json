@@ -1,0 +1,69 @@
+{
+  "message_id": "019355a0-cccc-7000-8000-000000000003",
+  "type": "job.result",
+  "schema_version": "1.0",
+  "occurred_at": "2026-11-24T10:00:00.123456Z",
+  "correlation_id": "019355a0-0000-7000-8000-00000000c0de",
+  "causation_id": "019355a0-aaaa-7000-8000-000000000001",
+  "producer": "adapter-dummy@0.1.0",
+  "payload": {
+    "job_id": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9a01",
+    "attempt": 1,
+    "execution_id": "019355a0-9999-7000-8000-0000000000e1",
+    "delivery_count": 0,
+    "worker_id": "dummy-7f3a",
+    "adapter_key": "dummy",
+    "adapter_version": "0.1.0",
+    "started_at": "2026-11-24T10:00:00.200Z",
+    "finished_at": "2026-11-24T10:00:00.320Z",
+    "outcome": "SUCCESS",
+    "raw_response": {
+      "content_type": "application/json",
+      "body": {
+        "tracking_number": "DUMMY-OK-1",
+        "history": [
+          "PKG_CREATED",
+          "PKG_IN_TRANSIT",
+          "PKG_DELIVERED"
+        ]
+      }
+    },
+    "events": [
+      {
+        "raw_status": "PKG_CREATED",
+        "raw_description": "Shipment information received",
+        "occurred_at": "2026-11-22T08:00:00Z",
+        "location": {
+          "city": "Chennai",
+          "country": "IN"
+        }
+      },
+      {
+        "raw_status": "PKG_IN_TRANSIT",
+        "raw_description": "Departed from facility",
+        "occurred_at": "2026-11-23T02:30:00Z",
+        "location": {
+          "city": "Bengaluru",
+          "country": "IN"
+        }
+      },
+      {
+        "raw_status": "PKG_DELIVERED",
+        "raw_description": "Delivered",
+        "occurred_at": "2026-11-24T09:45:00Z",
+        "location": {
+          "city": "Coimbatore",
+          "country": "IN"
+        }
+      }
+    ],
+    "metrics": {
+      "duration_ms": 120
+    },
+    "error": {
+      "class": "INTERNAL",
+      "message": "contradiction",
+      "retryable": false
+    }
+  }
+}

@@ -1,0 +1,60 @@
+# Local development stack. Phase 1 contains only the two infrastructure dependencies;
+# the engine and adapter workers are added in Phase 5.
+#
+# Run through the Makefile (make up-deps), which supplies --env-file .env and the project name.
+
+name: courier
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    hostname: courier-rabbitmq   # stable node name, so the data volume survives container re-creation
+    entrypoint: ["/bin/sh", "/opt/courier/entrypoint.sh"]
+    command: ["rabbitmq-server"]
+    environment:
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST}
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD}
+      RABBITMQ_ENGINE_USER: ${RABBITMQ_ENGINE_USER}
+      RABBITMQ_ENGINE_PASSWORD: ${RABBITMQ_ENGINE_PASSWORD}
+      RABBITMQ_WORKER_USER: ${RABBITMQ_WORKER_USER}
+      RABBITMQ_WORKER_PASSWORD: ${RABBITMQ_WORKER_PASSWORD}
+    ports:
+      - "127.0.0.1:${RABBITMQ_HOST_PORT}:5672"
+      - "127.0.0.1:${RABBITMQ_MGMT_HOST_PORT}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-courier.conf:ro
+      - ./rabbitmq/definitions.template.json:/opt/courier/definitions.template.json:ro
+      - ./rabbitmq/entrypoint.sh:/opt/courier/entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

@@ -1,0 +1,62 @@
+# Courier Tracking System — developer entry points.
+# Targets are added phase by phase; every target listed here works today.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+# Override if your user cannot reach the Docker daemon directly: make up-deps DOCKER="sudo docker"
+DOCKER  ?= docker
+COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
+
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
+
+env: ## Create .env from .env.example if it does not exist
+	@test -f .env || (cp .env.example .env && echo "created .env from .env.example")
+
+setup: env ## Install project-local Python environments (uv-managed Python 3.13; system Python untouched)
+	cd courier-contracts && uv sync
+
+compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
+	$(COMPOSE) config --quiet && echo "compose file OK"
+
+up-deps: env ## Start PostgreSQL and RabbitMQ and wait until both are healthy
+	$(COMPOSE) up -d --wait postgres rabbitmq
+
+verify-deps: env ## Check databases, RabbitMQ vhost, users and permissions
+	bash infrastructure/verify-deps.sh "$(DOCKER)"
+
+down: ## Stop containers (data volumes are kept)
+	$(COMPOSE) down
+
+destroy: ## Stop containers and delete data volumes
+	$(COMPOSE) down --volumes
+
+ps: ## Show container status
+	$(COMPOSE) ps
+
+logs: ## Follow container logs
+	$(COMPOSE) logs -f --tail=100
+
+test-contracts: ## Validate schemas, fixtures and topology
+	cd courier-contracts && uv run pytest
+
+migrate: env ## Apply database migrations (needs PostgreSQL: make up-deps)
+	cd courier-engine && cargo run --quiet -- migrate
+
+run-engine: env ## Run the Engine API on ENGINE_HTTP_ADDR (default 127.0.0.1:8080)
+	cd courier-engine && cargo run -- serve
+
+test-engine: env ## Engine: format check, lints as errors, unit + integration tests (needs PostgreSQL)
+	cd courier-engine && cargo fmt --check
+	cd courier-engine && cargo clippy --all-targets -- -D warnings
+	cd courier-engine && set -a && . ../.env && set +a && cargo test
+
+update-contract-fixtures: ## Regenerate the Engine-produced contract fixtures (developer action; review and commit the diff)
+	@test -z "$$CI" || (echo "refusing to regenerate contract fixtures in CI" && exit 1)
+	cd courier-engine && UPDATE_CONTRACT_FIXTURES=1 cargo test --quiet --test contracts the_engines_job_track_message
+	$(MAKE) test-contracts
+
+test: test-contracts test-engine ## Run every test suite that exists so far

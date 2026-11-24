@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Schemas, fixtures and topology
+        run: make setup test-contracts
+
+  infrastructure:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose file
+        run: make compose-config
+      - name: Start PostgreSQL and RabbitMQ
+        run: make up-deps
+      - name: Verify databases, vhost, users and permissions
+        run: make verify-deps
+      - name: Container logs on failure
+        if: failure()
+        run: make ps && docker compose --env-file .env -f infrastructure/docker-compose.yml -p courier logs --tail=200
+      - name: Stop
+        if: always()
+        run: make destroy
+
+  engine:
+    name: Engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: courier-engine
+      - name: Start PostgreSQL
+        run: make env && docker compose --env-file .env -f infrastructure/docker-compose.yml -p courier up -d --wait postgres
+      - name: Migrations apply, and are a no-op the second time
+        run: make migrate && make migrate
+      - name: Format, lint, test
+        run: make test-engine
+      - name: Stop
+        if: always()
+        run: make destroy
+
+  # Adapter (ruff, mypy, pytest) and end-to-end jobs are added in Phases 4 and 5.

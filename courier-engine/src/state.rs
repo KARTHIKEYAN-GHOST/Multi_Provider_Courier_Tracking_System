@@ -1,0 +1,21 @@
+use std::sync::Arc;
+
+use sqlx::PgPool;
+
+use crate::config::Config;
+
+/// Shared by every request handler.
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: PgPool,
+    pub config: Arc<Config>,
+}
+
+impl AppState {
+    pub fn new(pool: PgPool, config: Config) -> Self {
+        AppState {
+            pool,
+            config: Arc::new(config),
+        }
+    }
+}

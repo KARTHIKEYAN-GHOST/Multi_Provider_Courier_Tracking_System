@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.courier-tracking.invalid/v1/job.result.schema.json",
+  "title": "job.result (v1) — adapter worker to Engine",
+  "description": "Reports the outcome of one physical execution. Carries started_at and finished_at so it is complete even if job.started never arrives.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "properties": {
+    "type": { "const": "job.result" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "attempt",
+        "execution_id",
+        "delivery_count",
+        "worker_id",
+        "adapter_key",
+        "adapter_version",
+        "started_at",
+        "finished_at",
+        "outcome"
+      ],
+      "properties": {
+        "job_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "attempt": { "$ref": "common.schema.json#/$defs/attempt" },
+        "execution_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "delivery_count": { "$ref": "common.schema.json#/$defs/deliveryCount" },
+        "worker_id": { "$ref": "common.schema.json#/$defs/workerId" },
+        "adapter_key": { "$ref": "common.schema.json#/$defs/key" },
+        "adapter_version": { "$ref": "common.schema.json#/$defs/version" },
+        "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "outcome": { "$ref": "common.schema.json#/$defs/outcome" },
+        "raw_response": { "$ref": "common.schema.json#/$defs/rawResponse" },
+        "events": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "common.schema.json#/$defs/trackingEvent" }
+        },
+        "error": { "$ref": "common.schema.json#/$defs/error" },
+        "metrics": { "$ref": "common.schema.json#/$defs/metrics" }
+      },
+      "allOf": [
+        {
+          "description": "SUCCESS must carry the raw response and the extracted events, and no error.",
+          "if": { "required": ["outcome"], "properties": { "outcome": { "const": "SUCCESS" } } },
+          "then": {
+            "required": ["raw_response", "events"],
+            "not": { "required": ["error"] }
+          }
+        },
+        {
+          "description": "NOT_FOUND is a valid answer from the provider, not an error.",
+          "if": { "required": ["outcome"], "properties": { "outcome": { "const": "NOT_FOUND" } } },
+          "then": { "not": { "required": ["error"] } }
+        },
+        {
+          "description": "FAILURE must say what went wrong.",
+          "if": { "required": ["outcome"], "properties": { "outcome": { "const": "FAILURE" } } },
+          "then": { "required": ["error"] }
+        }
+      ]
+    }
+  }
+}

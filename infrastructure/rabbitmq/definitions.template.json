@@ -1,0 +1,33 @@
+{
+  "vhosts": [
+    { "name": "__VHOST__" }
+  ],
+  "users": [
+    { "name": "__ADMIN_USER__", "password": "__ADMIN_PASSWORD__", "tags": ["administrator"] },
+    { "name": "__ENGINE_USER__", "password": "__ENGINE_PASSWORD__", "tags": [] },
+    { "name": "__WORKER_USER__", "password": "__WORKER_PASSWORD__", "tags": [] }
+  ],
+  "permissions": [
+    {
+      "user": "__ADMIN_USER__",
+      "vhost": "__VHOST__",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "__ENGINE_USER__",
+      "vhost": "__VHOST__",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "__WORKER_USER__",
+      "vhost": "__VHOST__",
+      "configure": "^$",
+      "write": "^courier\\.events$",
+      "read": "^adapter\\.[a-z0-9_]+\\.(jobs|resume|control)$"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.courier-tracking.invalid/v1/job.track.schema.json",
+  "title": "job.track (v1) — Engine to adapter worker",
+  "description": "Asks a worker to look up one shipment. One message exists per logical attempt; the broker may deliver it more than once.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "properties": {
+    "type": { "const": "job.track" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "attempt",
+        "adapter_key",
+        "provider_code",
+        "tracking_number",
+        "timeout_ms",
+        "expires_at"
+      ],
+      "properties": {
+        "job_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "attempt": { "$ref": "common.schema.json#/$defs/attempt" },
+        "adapter_key": { "$ref": "common.schema.json#/$defs/key" },
+        "provider_code": { "$ref": "common.schema.json#/$defs/key" },
+        "tracking_number": { "$ref": "common.schema.json#/$defs/trackingNumber" },
+        "params": {
+          "description": "Provider-specific, non-secret lookup parameters.",
+          "type": "object"
+        },
+        "timeout_ms": {
+          "description": "Adapter execution budget, measured by the worker from the moment execution starts. Queue time is not deducted.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "expires_at": {
+          "description": "Queue-wait deadline. A worker drops a FIRST delivery received after this instant; redeliveries are always executed. Independent of timeout_ms.",
+          "$ref": "common.schema.json#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.courier-tracking.invalid/v1/envelope.schema.json",
+  "title": "Message envelope (v1)",
+  "description": "Wraps every message exchanged between the Engine and adapter workers. Unknown properties are allowed so that minor versions can add fields; an unknown major version is rejected.",
+  "type": "object",
+  "required": [
+    "message_id",
+    "type",
+    "schema_version",
+    "occurred_at",
+    "correlation_id",
+    "producer",
+    "payload"
+  ],
+  "properties": {
+    "message_id": {
+      "description": "Unique per message. Consumers deduplicate on it.",
+      "$ref": "common.schema.json#/$defs/uuid"
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z]+(\\.[a-z_]+)+$"
+    },
+    "schema_version": {
+      "description": "major.minor. This schema accepts major version 1 only.",
+      "type": "string",
+      "pattern": "^1\\.(0|[1-9][0-9]*)$"
+    },
+    "occurred_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "correlation_id": {
+      "description": "Constant across every message and log line caused by one API request.",
+      "$ref": "common.schema.json#/$defs/uuid"
+    },
+    "causation_id": {
+      "description": "message_id of the message that caused this one, if any.",
+      "$ref": "common.schema.json#/$defs/nullableUuid"
+    },
+    "producer": {
+      "description": "name@version of the sending component.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "payload": { "type": "object" }
+  }
+}

@@ -1,0 +1,87 @@
+# RabbitMQ topology — single source of truth for the Engine (which declares it)
+# and for adapter workers (which only look their queue up passively).
+#
+# Delivery is at-least-once. Every durable queue is a quorum queue with a delivery
+# limit and a dead-letter route, so a message that keeps failing ends up in a DLQ
+# instead of looping forever.
+
+version: 1
+vhost: courier
+
+limits:
+  max_message_bytes: 262144   # 256 KiB contract limit; larger payloads are not allowed in Milestone 1
+
+exchanges:
+  - name: courier.jobs        # Engine -> workers
+    type: topic
+    durable: true
+  - name: courier.events      # workers -> Engine
+    type: topic
+    durable: true
+  - name: courier.dlx         # dead-letter exchange for every queue below
+    type: topic
+    durable: true
+
+queues:
+  - name: adapter.dummy.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.dummy.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.dummy
+
+  - name: engine.events
+    durable: true
+    consumer: engine-event-consumer
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 5
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: engine.events
+    bindings:
+      - exchange: courier.events
+        routing_key: job.started.v1
+      - exchange: courier.events
+        routing_key: job.result.v1
+
+  # Dead-lettered job messages. The Engine consumes this queue: each message still
+  # names its job and attempt, so the affected attempt can be closed directly.
+  - name: adapter.dummy.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.dummy.jobs
+
+  # Events the Engine itself rejected as malformed. Parked for operators; not auto-consumed.
+  - name: engine.events.dlq
+    durable: true
+    consumer: none
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: engine.events
+
+# Where each message type is published. {adapter_key} is filled in by the publisher.
+# The major schema version is part of the routing key.
+routing:
+  job.track:
+    exchange: courier.jobs
+    routing_key: "job.track.v1.{adapter_key}"
+    schema: schemas/v1/job.track.schema.json
+  job.started:
+    exchange: courier.events
+    routing_key: job.started.v1
+    schema: schemas/v1/job.started.schema.json
+  job.result:
+    exchange: courier.events
+    routing_key: job.result.v1
+    schema: schemas/v1/job.result.schema.json

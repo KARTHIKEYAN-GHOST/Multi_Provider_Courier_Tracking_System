@@ -1,0 +1,177 @@
+{
+  "job.track.missing_message_id.json": {
+    "keyword": "required",
+    "path": [],
+    "reason": "envelope field message_id is mandatory"
+  },
+  "job.track.unknown_major_version.json": {
+    "keyword": "pattern",
+    "path": [
+      "schema_version"
+    ],
+    "reason": "only major version 1 is accepted"
+  },
+  "job.track.wrong_type.json": {
+    "keyword": "const",
+    "path": [
+      "type"
+    ],
+    "reason": "type must match the schema it is routed to"
+  },
+  "job.track.missing_correlation_id.json": {
+    "keyword": "required",
+    "path": [],
+    "reason": "correlation_id is mandatory"
+  },
+  "job.track.attempt_zero.json": {
+    "keyword": "minimum",
+    "path": [
+      "payload",
+      "attempt"
+    ],
+    "reason": "attempts start at 1"
+  },
+  "job.track.non_utc_expires_at.json": {
+    "keyword": "pattern",
+    "path": [
+      "payload",
+      "expires_at"
+    ],
+    "reason": "timestamps must be UTC with a Z suffix"
+  },
+  "job.track.empty_tracking_number.json": {
+    "keyword": "pattern",
+    "path": [
+      "payload",
+      "tracking_number"
+    ],
+    "reason": "tracking number must not be empty"
+  },
+  "job.track.missing_timeout.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "timeout_ms is mandatory"
+  },
+  "job.track.missing_expires_at.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "expires_at is mandatory"
+  },
+  "job.track.uppercase_uuid.json": {
+    "keyword": "pattern",
+    "path": [
+      "payload",
+      "job_id"
+    ],
+    "reason": "UUIDs are lowercase"
+  },
+  "job.track.payload_not_object.json": {
+    "keyword": "type",
+    "path": [
+      "payload"
+    ],
+    "reason": "payload must be an object"
+  },
+  "job.started.missing_execution_id.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "execution_id identifies the physical execution"
+  },
+  "job.started.negative_delivery_count.json": {
+    "keyword": "minimum",
+    "path": [
+      "payload",
+      "delivery_count"
+    ],
+    "reason": "delivery_count cannot be negative"
+  },
+  "job.started.bad_adapter_version.json": {
+    "keyword": "pattern",
+    "path": [
+      "payload",
+      "adapter_version"
+    ],
+    "reason": "adapter_version must be a semantic version"
+  },
+  "job.result.success_without_events.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "SUCCESS requires events"
+  },
+  "job.result.success_without_raw_response.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "SUCCESS requires the raw response"
+  },
+  "job.result.success_with_error.json": {
+    "keyword": "not",
+    "path": [
+      "payload"
+    ],
+    "reason": "SUCCESS must not carry an error"
+  },
+  "job.result.not_found_with_error.json": {
+    "keyword": "not",
+    "path": [
+      "payload"
+    ],
+    "reason": "NOT_FOUND is not an error"
+  },
+  "job.result.failure_without_error.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "FAILURE requires an error"
+  },
+  "job.result.engine_only_error_class.json": {
+    "keyword": "enum",
+    "path": [
+      "payload",
+      "error",
+      "class"
+    ],
+    "reason": "WORKER_LOST may only be assigned by the Engine"
+  },
+  "job.result.unknown_outcome.json": {
+    "keyword": "enum",
+    "path": [
+      "payload",
+      "outcome"
+    ],
+    "reason": "outcome must be SUCCESS, NOT_FOUND or FAILURE"
+  },
+  "job.result.event_without_status.json": {
+    "keyword": "required",
+    "path": [
+      "payload",
+      "events",
+      0
+    ],
+    "reason": "every event needs raw_status"
+  },
+  "job.result.missing_finished_at.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "finished_at is mandatory"
+  },
+  "job.result.missing_started_at.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "started_at is mandatory so a result is complete without job.started"
+  }
+}
