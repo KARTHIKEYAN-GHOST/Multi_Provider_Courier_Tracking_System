@@ -30,6 +30,9 @@ class JobTrack(Contract):
     expires_at: UtcTimestamp
     # Opaque reference to the credential the adapter needs; never the secret itself.
     credential_ref: UuidStr | None = None
+    # Set only in job.resume (see contracts/intervention.py).
+    intervention_id: UuidStr | None = None
+    session_ref: UuidStr | None = None
 
 
 class JobTrackEnvelope(Envelope[JobTrack]):

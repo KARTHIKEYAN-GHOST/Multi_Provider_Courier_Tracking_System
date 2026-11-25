@@ -1,0 +1,41 @@
+[project]
+name = "courier-human-interface"
+version = "0.1.0"
+description = "Minimal web page where a user answers one-time-code and CAPTCHA challenges"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "jinja2>=3.1",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.12",
+    "uvicorn>=0.32",
+]
+
+[dependency-groups]
+dev = ["mypy>=1.13", "pytest>=8", "ruff>=0.8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+# Starlette's test client announces a future change of its HTTP library; nothing to do yet.
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF", "SIM", "C4", "PT"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Form", "fastapi.Depends"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["human_interface", "tests"]

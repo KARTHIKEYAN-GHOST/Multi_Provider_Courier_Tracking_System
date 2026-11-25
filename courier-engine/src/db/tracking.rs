@@ -86,6 +86,8 @@ pub struct NewJob {
     pub max_attempts: i32,
     pub queue_deadline_at: DateTime<Utc>,
     pub correlation_id: Uuid,
+    /// The user whose request created the job; `None` for an automatic poll.
+    pub initiated_by: Option<Uuid>,
 }
 
 /// Inserts a QUEUED job unless the shipment already has a non-terminal job.
@@ -97,8 +99,9 @@ pub async fn insert_job_if_none_active(
     let inserted = sqlx::query_scalar::<_, Uuid>(
         concat!(
             "INSERT INTO tracking_jobs
-                 (id, shipment_id, adapter_id, trigger, status, attempt, max_attempts, queue_deadline_at, correlation_id)
-             VALUES ($1, $2, $3, $4, 'QUEUED', 1, $5, $6, $7)
+                 (id, shipment_id, adapter_id, trigger, status, attempt, max_attempts, queue_deadline_at,
+                  correlation_id, initiated_by)
+             VALUES ($1, $2, $3, $4, 'QUEUED', 1, $5, $6, $7, $8)
              ON CONFLICT (shipment_id) WHERE status IN ",
             active_job_statuses!(),
             " DO NOTHING
@@ -112,6 +115,7 @@ pub async fn insert_job_if_none_active(
     .bind(job.max_attempts)
     .bind(job.queue_deadline_at)
     .bind(job.correlation_id)
+    .bind(job.initiated_by)
     .fetch_optional(conn)
     .await?;
     Ok(inserted.is_some())

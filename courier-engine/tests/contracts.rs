@@ -319,8 +319,13 @@ fn fixtures(directory: &str) -> Vec<(String, Vec<u8>)> {
 }
 
 /// Runs a fixture through the parser the Engine uses for that message type.
+/// Messages the Engine sends (and reads back only from a dead-letter queue).
+fn engine_to_worker(name: &str) -> bool {
+    name.starts_with("job.track.") || name.starts_with("job.resume.")
+}
+
 fn parse_fixture(name: &str, body: &[u8]) -> Result<(), String> {
-    if name.starts_with("job.track.") {
+    if engine_to_worker(name) {
         parse_job_track(body).map(|_| ()).map_err(|e| e.0)
     } else {
         parse_incoming_event(body).map(|_| ()).map_err(|e| e.0)
@@ -363,7 +368,7 @@ fn every_invalid_fixture_is_rejected_by_the_engine() {
 #[test]
 fn a_message_of_another_type_is_rejected() {
     for (name, body) in fixtures("valid") {
-        if name.starts_with("job.track.") {
+        if engine_to_worker(&name) {
             assert!(
                 parse_incoming_event(&body).is_err(),
                 "{name} accepted as a worker event"
@@ -371,7 +376,7 @@ fn a_message_of_another_type_is_rejected() {
         } else {
             assert!(
                 parse_job_track(&body).is_err(),
-                "{name} accepted as job.track"
+                "{name} accepted as a job message"
             );
         }
     }

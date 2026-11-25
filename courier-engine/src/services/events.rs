@@ -1,4 +1,5 @@
-//! Handling of worker events (`job.started`, `job.result`) consumed from `engine.events`.
+//! Handling of worker events (`job.started`, `job.result`, `job.intervention_required`)
+//! consumed from `engine.events`.
 //!
 //! Delivery is at-least-once and unordered, so every handler is idempotent and makes no
 //! assumption about which message arrives first:
@@ -57,6 +58,9 @@ pub async fn handle_event(
     let handled = match &event {
         IncomingEvent::Started(envelope) => on_started(&mut tx, envelope).await?,
         IncomingEvent::Result(envelope) => on_result(&mut tx, envelope, policy).await?,
+        IncomingEvent::InterventionRequired(envelope) => {
+            super::interventions::on_intervention_required(&mut tx, envelope, policy).await?
+        }
     };
     match handled {
         // A rejected message leaves no trace, not even its inbox row.
@@ -103,7 +107,7 @@ pub(crate) async fn lock_job_attempt(
     Ok(found.is_some())
 }
 
-async fn count_execution(
+pub(crate) async fn count_execution(
     conn: &mut PgConnection,
     job_id: Uuid,
     attempt: i32,
@@ -299,6 +303,12 @@ async fn on_result(
     .bind(disposition)
     .execute(&mut *conn)
     .await?;
+
+    // The lookup went on with the user's answer (if there was one): the challenge is over
+    // and the stored answer is deleted.
+    if closed.is_some() {
+        super::interventions::close_open(conn, p.job_id, "completed").await?;
+    }
 
     // Only the accepted execution's data is stored.
     if closed.is_some() && p.outcome != JobOutcome::Failure {

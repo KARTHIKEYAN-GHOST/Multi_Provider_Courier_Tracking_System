@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import secrets
 import signal
@@ -42,30 +43,54 @@ from .base import Adapter, TrackingResult, TrackRequest
 from .config import WorkerSettings
 from .context import JobContext
 from .contracts import (
+    JOB_INTERVENTION_REQUIRED,
     JOB_RESULT,
+    JOB_RESUME,
     JOB_STARTED,
     MAX_MESSAGE_BYTES,
     SCHEMA_VERSION,
     ErrorClass,
     ErrorInfo,
+    InterventionRequired,
+    InterventionRequiredEnvelope,
     JobResult,
     JobResultEnvelope,
+    JobResume,
+    JobResumeEnvelope,
     JobStarted,
     JobStartedEnvelope,
+    JobTrack,
     JobTrackEnvelope,
     Metrics,
     Outcome,
     new_id,
     utc_now,
 )
-from .credentials import CredentialResolver, HttpCredentialResolver
-from .errors import ShipmentNotFound, describe
+from .credentials import CredentialDenied, CredentialResolver, HttpCredentialResolver
+from .errors import SavedSessionLost, ShipmentNotFound, describe
+from .interventions import Challenge, NeedsHuman
 from .logging import get_logger
+from .sessions import RedisSessionStore, SessionStore
 from .testing import FaultInjection, SimulateCrash, SimulateDuplicateResult, SimulateHang
 from .topology import WorkerRoutes, routes_for
 
 #: Exit status used when a test adapter asks the worker to crash.
 CRASH_EXIT_CODE = 70
+#: A session outlives the challenge's own lifetime by this much, so that an answer given at
+#: the last moment can still be used after the resume message waited in the queue.
+SESSION_MARGIN_S = 900
+
+
+def _parse_job(body: bytes) -> JobTrackEnvelope | JobResumeEnvelope:
+    """Both job messages arrive on one queue; the ``type`` field picks the model. Anything
+    that is not a readable ``job.resume`` is validated (and, if wrong, refused) as ``job.track``."""
+    try:
+        head = json.loads(body)
+    except ValueError:
+        head = None
+    if isinstance(head, dict) and head.get("type") == JOB_RESUME:
+        return JobResumeEnvelope.model_validate_json(body)
+    return JobTrackEnvelope.model_validate_json(body)
 
 
 class Delivery(Protocol):
@@ -100,7 +125,7 @@ class SessionLost(Exception):
 class _Execution:
     """One physical execution of a job message."""
 
-    envelope: JobTrackEnvelope
+    envelope: JobTrackEnvelope | JobResumeEnvelope
     execution_id: str
     delivery_count: int
     log: structlog.stdlib.BoundLogger
@@ -121,12 +146,14 @@ class Worker:
         publisher: EventPublisher,
         *,
         resolver: CredentialResolver | None = None,
+        sessions: SessionStore | None = None,
         exit_process: Callable[[int], NoReturn] = _hard_exit,
     ) -> None:
         self.adapter = adapter
         self.settings = settings
         self.publisher = publisher
         self.resolver = resolver
+        self.sessions = sessions
         self.worker_id = settings.worker_id or f"{adapter.key}-{secrets.token_hex(4)}"
         self.log = get_logger(worker_id=self.worker_id, adapter_key=adapter.key)
         self._slots = asyncio.Semaphore(settings.worker_concurrency)
@@ -199,9 +226,15 @@ class Worker:
             result = await self._execute(execution, ctx)
             if result is None:  # a simulated hang: nothing more happens for this job
                 return
-            duplicate, result_message = result
-            await self._publish_result(execution, started_at, clock, result_message, duplicate=duplicate)
+            duplicate, outcome = result
+            if outcome.challenge is not None:
+                await self._publish_intervention(execution, started_at, clock, outcome)
+            else:
+                await self._publish_result(execution, started_at, clock, outcome, duplicate=duplicate)
             await delivery.ack()
+            if isinstance(job, JobResume) and self.sessions is not None:
+                # Reported and acknowledged: the session this execution continued is used up.
+                await self.sessions.delete(job.session_ref)
         except SessionLost:
             # Not acknowledged. The session owner drops the connection, RabbitMQ returns the
             # message and counts the failed delivery.
@@ -216,11 +249,11 @@ class Worker:
             await delivery.reject()
             return None
         try:
-            envelope = JobTrackEnvelope.model_validate_json(delivery.body)
+            envelope = _parse_job(delivery.body)
         except ValidationError as error:
             # Field names and rule names only: message content is not copied into the log.
             reasons = sorted({f"{'.'.join(map(str, e['loc']))}: {e['type']}" for e in error.errors()})
-            self.log.warning("job_rejected", reason="invalid job.track message", details=reasons[:10])
+            self.log.warning("job_rejected", reason="invalid job message", details=reasons[:10])
             await delivery.reject()
             return None
         job = envelope.payload
@@ -262,7 +295,7 @@ class Worker:
         try:
             try:
                 async with asyncio.timeout(job.timeout_ms / 1000):
-                    answer = await self.adapter.track(request, ctx)
+                    answer = await self._call_adapter(job, request, ctx)
             except FaultInjection as fault:
                 if not self.settings.worker_allow_fault_injection:
                     raise RuntimeError("fault injection is disabled") from fault
@@ -277,6 +310,14 @@ class Worker:
                     raise RuntimeError(f"unknown fault {type(fault).__name__}") from fault
                 answer, duplicate = fault.result, True
             return duplicate, _Outcome(Outcome.SUCCESS, answer=answer)
+        except NeedsHuman as pause:
+            try:
+                return False, await self._pause(pause.challenge)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                execution.log.error("challenge_not_saved", error_type=type(error).__name__)
+                return False, _Outcome(Outcome.FAILURE, error=describe(error))
         except ShipmentNotFound:
             return False, _Outcome(Outcome.NOT_FOUND)
         except asyncio.CancelledError:
@@ -286,6 +327,34 @@ class Worker:
             if info.error_class in (ErrorClass.INTERNAL, ErrorClass.UNKNOWN):
                 execution.log.exception("adapter_raised_unexpected_error")
             return False, _Outcome(Outcome.FAILURE, error=info)
+
+    async def _call_adapter(self, job: JobTrack, request: TrackRequest, ctx: JobContext) -> TrackingResult:
+        """A new lookup calls ``track``. A resumed one loads the saved session, fetches the
+        user's answer from the Engine and calls ``resume``. The answer lives only in this
+        call: it is not logged, not stored and not put into any message."""
+        if not isinstance(job, JobResume):
+            return await self.adapter.track(request, ctx)
+        if self.sessions is None:
+            raise RuntimeError("this worker has no session store; it cannot resume a lookup")
+        if self.resolver is None:
+            raise CredentialDenied("this worker is not configured to fetch answers from the Engine")
+        session = await self.sessions.load(job.session_ref)
+        if session is None:
+            raise SavedSessionLost("the session saved for this lookup has expired or is gone")
+        response = await self.resolver.intervention_response(job.intervention_id, job.job_id, job.attempt)
+        return await self.adapter.resume(request, ctx, session, response)
+
+    async def _pause(self, challenge: Challenge) -> _Outcome:
+        """Saves the adapter's session under a fresh reference. Only then may the Engine be
+        told: a challenge whose session was not stored could never be continued."""
+        if self.sessions is None:
+            raise RuntimeError("the adapter raised a challenge but this worker has no session store")
+        session_ref = new_id()
+        ttl_s = self.settings.worker_session_ttl_s
+        if challenge.expires_in_s is not None:
+            ttl_s = min(ttl_s, challenge.expires_in_s + SESSION_MARGIN_S)
+        await self.sessions.save(session_ref, challenge.session, ttl_s)
+        return _Outcome(None, challenge=challenge, session_ref=session_ref)
 
     # ------------------------------------------------------------------ messages
 
@@ -330,6 +399,53 @@ class Worker:
             # lost start notice must not stop the job.
             execution.log.warning("job_started_not_published", error=repr(error))
 
+    async def _publish_intervention(
+        self, execution: _Execution, started_at: datetime, clock: float, outcome: _Outcome
+    ) -> None:
+        """Tells the Engine this execution stopped for a human answer. The message carries the
+        prompt, the picture (CAPTCHA) and the session *reference* — never the session."""
+        challenge = outcome.challenge
+        assert challenge is not None
+        assert outcome.session_ref is not None
+        payload = InterventionRequired(
+            **self._identity(execution, started_at),
+            finished_at=utc_now(),
+            kind=challenge.kind,
+            prompt=challenge.prompt,
+            session_ref=outcome.session_ref,
+            expires_in_s=challenge.expires_in_s,
+            response_format=challenge.response_format,
+            image=challenge.image,
+        )
+        message = InterventionRequiredEnvelope.model_validate(
+            {**self._envelope(execution, JOB_INTERVENTION_REQUIRED), "payload": payload}
+        )
+        body = message.to_bytes()
+        if len(body) > MAX_MESSAGE_BYTES:
+            failure = _Outcome(
+                Outcome.FAILURE,
+                error=ErrorInfo(
+                    error_class=ErrorClass.INTERNAL,
+                    message=f"challenge of {len(body)} bytes exceeds the message size limit",
+                    retryable=False,
+                ),
+            )
+            await self._publish_result(execution, started_at, clock, failure, duplicate=False)
+            return
+        try:
+            await self.publisher.publish(
+                JOB_INTERVENTION_REQUIRED, body, message.message_id, message.correlation_id
+            )
+        except Exception as error:
+            execution.log.error("intervention_not_published", error=repr(error))
+            raise SessionLost from error
+        execution.log.info(
+            "job_waiting_for_human",
+            kind=challenge.kind,
+            session_ref=outcome.session_ref,
+            duration_ms=int((time.monotonic() - clock) * 1000),
+        )
+
     async def _publish_result(
         self,
         execution: _Execution,
@@ -340,6 +456,7 @@ class Worker:
         duplicate: bool,
     ) -> None:
         duration_ms = int((time.monotonic() - clock) * 1000)
+        assert outcome.outcome is not None
         payload = JobResult(
             **self._identity(execution, started_at),
             finished_at=utc_now(),
@@ -388,9 +505,12 @@ class Worker:
 
 @dataclass(frozen=True)
 class _Outcome:
-    outcome: Outcome
+    #: ``None`` when the execution stopped for a human answer instead of finishing.
+    outcome: Outcome | None
     answer: TrackingResult | None = None
     error: ErrorInfo | None = None
+    challenge: Challenge | None = None
+    session_ref: str | None = None
 
 
 # ---------------------------------------------------------------------- RabbitMQ transport
@@ -428,7 +548,11 @@ class AmqpPublisher:
         self, exchange: aio_pika.abc.AbstractExchange, routes: WorkerRoutes, timeout_s: float = 10.0
     ) -> None:
         self._exchange = exchange
-        self._keys = {JOB_STARTED: routes.started_routing_key, JOB_RESULT: routes.result_routing_key}
+        self._keys = {
+            JOB_STARTED: routes.started_routing_key,
+            JOB_RESULT: routes.result_routing_key,
+            JOB_INTERVENTION_REQUIRED: routes.intervention_routing_key,
+        }
         self._timeout_s = timeout_s
 
     async def publish(self, message_type: str, body: bytes, message_id: str, correlation_id: str) -> None:
@@ -466,6 +590,24 @@ class WorkerProcess:
             self.resolver = HttpCredentialResolver(
                 settings.worker_engine_internal_url, settings.worker_token.get_secret_value()
             )
+        # One session store for the whole process, if the adapter may wait for human answers.
+        self.sessions: SessionStore | None = None
+        store_url = (
+            settings.worker_session_store_url.get_secret_value() if settings.worker_session_store_url else ""
+        )
+        session_key = settings.worker_session_key.get_secret_value() if settings.worker_session_key else ""
+        if store_url and session_key:
+            self.sessions = RedisSessionStore(
+                store_url,
+                session_key,
+                prefix=f"{settings.worker_topology_prefix}courier:session:{adapter.key}:",
+            )
+        elif store_url or session_key:
+            # Half configured: the worker runs, but a lookup that needs a person will fail.
+            self.log.warning(
+                "session_store_disabled",
+                reason="WORKER_SESSION_STORE_URL and WORKER_SESSION_KEY must both be set",
+            )
         self._stopping = asyncio.Event()
         self._exit_process = exit_process
         #: Set while a session is consuming. Tests wait on it.
@@ -496,6 +638,8 @@ class WorkerProcess:
             await self.adapter.shutdown()
             if self.resolver is not None:
                 await self.resolver.aclose()
+            if self.sessions is not None:
+                await self.sessions.aclose()
             self.log.info("worker_stopped")
 
     async def _sleep_or_stop(self, seconds: float) -> None:
@@ -512,6 +656,7 @@ class WorkerProcess:
                 self.settings,
                 AmqpPublisher(exchange, self.routes),
                 resolver=self.resolver,
+                sessions=self.sessions,
                 exit_process=self._exit_process,
             )
 

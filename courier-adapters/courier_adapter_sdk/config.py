@@ -21,6 +21,14 @@ class WorkerSettings(BaseSettings):
     worker_engine_internal_url: str = ""
     #: This worker's token for the internal API. A secret: never logged.
     worker_token: SecretStr | None = None
+    #: Session store for lookups that wait for a human answer, e.g. redis://:password@redis:6379/0.
+    #: Needed only by adapters that raise challenges. A secret (it can contain a password).
+    worker_session_store_url: SecretStr | None = None
+    #: Key that encrypts sessions in that store: 64 hexadecimal characters. A secret. Every
+    #: worker of one adapter must use the same key.
+    worker_session_key: SecretStr | None = None
+    #: Longest time a session is kept, whatever the challenge says.
+    worker_session_ttl_s: int = Field(default=4500, ge=60, le=86_400)
     #: How many jobs run at the same time in this process.
     worker_concurrency: int = Field(default=4, ge=1, le=256)
     #: Unacknowledged messages RabbitMQ may hand this worker. Defaults to the concurrency.

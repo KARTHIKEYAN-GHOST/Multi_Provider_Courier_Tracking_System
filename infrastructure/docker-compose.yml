@@ -1,8 +1,8 @@
-# Local stack: PostgreSQL, RabbitMQ, the Engine, the dummy and demo-site adapter workers and
-# the demo courier website. The DHL worker is opt-in (it needs an API key and a worker token).
+# Local stack: PostgreSQL, RabbitMQ, Redis, the Engine, the dummy and demo-site adapter
+# workers, the demo courier website and the human interface. The DHL worker is opt-in (it needs an API key and a worker token).
 #
 # Run through the Makefile, which supplies --env-file .env and the project name:
-#   make up-deps   PostgreSQL + RabbitMQ only (for development and the test suites)
+#   make up-deps   PostgreSQL + RabbitMQ + Redis only (for development and the test suites)
 #   make up        everything except DHL
 #   make up-dhl    additionally the DHL worker (see docs/phase-6.md)
 
@@ -57,6 +57,25 @@ services:
       timeout: 10s
       retries: 24
       start_period: 20s
+
+  # Session store of the adapter workers: what a lookup needs to continue after a person has
+  # answered a one-time code or CAPTCHA. Only workers use it; the Engine never connects.
+  # Sessions are encrypted by the workers and expire, so nothing is persisted to disk.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --save '' --appendonly no --maxmemory 128mb --maxmemory-policy volatile-ttl"]
+    environment:
+      # The default keeps a .env written before Phase 8 working; set your own outside local development.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev_redis_password}
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
 
   # Applies database migrations once, then exits. The Engine starts only after it succeeded.
   engine-migrate:
@@ -129,6 +148,9 @@ services:
     environment:
       DEMO_SITE_HOST: 0.0.0.0
       DEMO_SITE_PORT: "8090"
+    ports:
+      # Published so a person can open the pretend phone inbox (/inbox?number=...) in a browser.
+      - "127.0.0.1:${DEMO_SITE_HOST_PORT:-8090}:8090"
     healthcheck:
       test: ["CMD", "/app/courier-adapters/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2)"]
       interval: 3s
@@ -147,12 +169,45 @@ services:
       WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       DEMOSITE_BASE_URL: http://demo-site:8090
+      # For shipments behind a one-time code or CAPTCHA (DEMO-OTP-, DEMO-CAPTCHA-): the
+      # session store, the key that encrypts sessions in it, and the worker's token for
+      # fetching the user's answer from the Engine. Without the last two, ordinary lookups
+      # still work and only those shipments fail. See docs/phase-8.md.
+      WORKER_SESSION_STORE_URL: redis://:${REDIS_PASSWORD:-dev_redis_password}@redis:6379/0
+      WORKER_SESSION_KEY: ${WORKER_SESSION_KEY:-}
+      WORKER_ENGINE_INTERNAL_URL: http://engine:8081
+      WORKER_TOKEN: ${DEMOSITE_WORKER_TOKEN:-}
       LOG_FORMAT: json
     depends_on:
       engine:
         condition: service_healthy
       demo-site:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # The page where a user answers one-time codes and CAPTCHAs. A thin client of the Engine's
+  # public API: no database, RabbitMQ or Redis access, and no secrets of its own.
+  human-interface:
+    build:
+      context: ..
+      dockerfile: courier-human-interface/Dockerfile
+    image: courier-human-interface:local
+    restart: unless-stopped
+    environment:
+      HUMAN_INTERFACE_ENGINE_URL: http://engine:8080
+      HUMAN_INTERFACE_COOKIE_SECURE: ${HUMAN_INTERFACE_COOKIE_SECURE:-false}
+    ports:
+      - "127.0.0.1:${HUMAN_INTERFACE_HOST_PORT:-8088}:8088"
+    depends_on:
+      engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/courier-human-interface/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/healthz', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
 
   # DHL adapter (official API). Started only with the "dhl" profile: make up-dhl.
   # It holds no DHL key: it asks the Engine for it per job, identifying itself with its token.

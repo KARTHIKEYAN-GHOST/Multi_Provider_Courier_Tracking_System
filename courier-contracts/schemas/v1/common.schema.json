@@ -49,7 +49,7 @@
       "enum": ["SUCCESS", "NOT_FOUND", "FAILURE"]
     },
     "workerErrorClass": {
-      "description": "Error classes a worker may report. DELIVERY_LIMIT_EXCEEDED, QUEUE_WAIT_EXCEEDED and WORKER_LOST are assigned only by the Engine and are deliberately absent.",
+      "description": "Error classes a worker may report. DELIVERY_LIMIT_EXCEEDED, QUEUE_WAIT_EXCEEDED, WORKER_LOST, INTERVENTION_EXPIRED and CHALLENGE_LIMIT_EXCEEDED are assigned only by the Engine and are deliberately absent.",
       "enum": [
         "NETWORK_TIMEOUT",
         "NETWORK_CONNECT",
@@ -62,7 +62,8 @@
         "SCHEMA_DRIFT",
         "ADAPTER_TIMEOUT",
         "INTERNAL",
-        "UNKNOWN"
+        "UNKNOWN",
+        "SESSION_LOST"
       ]
     },
     "location": {

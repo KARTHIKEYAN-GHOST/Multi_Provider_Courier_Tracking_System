@@ -21,6 +21,7 @@ use crate::{
     error::ApiError,
     services::{
         credentials::{self, ResolveRequest, Resolved},
+        interventions::{self, ResponseRequest, ResponseResolved},
         worker_tokens::{self, WorkerIdentity},
     },
     state::AppState,
@@ -29,6 +30,10 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/internal/v1/credentials/resolve", post(resolve))
+        .route(
+            "/internal/v1/interventions/resolve",
+            post(resolve_intervention),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_worker_token,
@@ -99,6 +104,46 @@ async fn resolve(
         Resolved::Denied(_) => Err(ApiError::Forbidden {
             code: "resolve_denied",
             message: "the credential cannot be resolved for this job",
+        }),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveInterventionBody {
+    intervention_id: Uuid,
+    job_id: Uuid,
+    attempt: i32,
+}
+
+/// POST /internal/v1/interventions/resolve
+///
+/// Hands the worker the user's answer for the job it is resuming. As with credentials, every
+/// refusal is the same 403 and the reason is only in the audit log.
+async fn resolve_intervention(
+    State(state): State<AppState>,
+    Extension(worker): Extension<WorkerIdentity>,
+    ApiJson(body): ApiJson<ResolveInterventionBody>,
+) -> Result<Response, ApiError> {
+    let Some(store) = state.secrets.as_deref() else {
+        return Err(ApiError::Unavailable("answer store"));
+    };
+    let request = ResponseRequest {
+        intervention_id: body.intervention_id,
+        job_id: body.job_id,
+        attempt: body.attempt,
+    };
+    match interventions::resolve_response(&state.pool, store.master(), &worker, request).await? {
+        ResponseResolved::Response(answer) => {
+            let mut response =
+                (StatusCode::OK, Json(json!({ "response": answer }))).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            Ok(response)
+        }
+        ResponseResolved::Denied(_) => Err(ApiError::Forbidden {
+            code: "resolve_denied",
+            message: "the answer cannot be resolved for this job",
         }),
     }
 }

@@ -30,6 +30,12 @@ pub enum ApiError {
         code: &'static str,
         message: &'static str,
     },
+    /// The resource existed but can no longer be acted on.
+    #[error("{message}")]
+    Gone {
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("request timed out")]
     Timeout,
     #[error("service unavailable: {0}")]
@@ -81,6 +87,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden { code, .. } => {
                 (StatusCode::FORBIDDEN, *code, self.to_string(), Value::Null)
             }
+            ApiError::Gone { code, .. } => (StatusCode::GONE, *code, self.to_string(), Value::Null),
             ApiError::Timeout => (
                 StatusCode::GATEWAY_TIMEOUT,
                 "timeout",

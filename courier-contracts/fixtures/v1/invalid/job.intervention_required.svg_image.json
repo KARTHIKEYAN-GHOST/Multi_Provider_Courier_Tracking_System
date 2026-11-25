@@ -1,0 +1,27 @@
+{
+  "message_id": "019355a0-aaaa-7000-8000-000000000042",
+  "type": "job.intervention_required",
+  "schema_version": "1.0",
+  "occurred_at": "2026-11-24T10:00:00.123456Z",
+  "correlation_id": "019355a0-0000-7000-8000-00000000c0de",
+  "causation_id": "019355a0-aaaa-7000-8000-000000000001",
+  "producer": "adapter-dummy@0.1.0",
+  "payload": {
+    "job_id": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9a01",
+    "attempt": 1,
+    "execution_id": "019355a0-9999-7000-8000-0000000000e1",
+    "delivery_count": 0,
+    "worker_id": "dummy-7f3a",
+    "adapter_key": "dummy",
+    "adapter_version": "0.1.0",
+    "started_at": "2026-11-24T10:00:00.200Z",
+    "finished_at": "2026-11-24T10:00:01Z",
+    "kind": "captcha",
+    "prompt": "Type the characters shown in the picture.",
+    "session_ref": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9c01",
+    "image": {
+      "content_type": "image/svg+xml",
+      "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    }
+  }
+}

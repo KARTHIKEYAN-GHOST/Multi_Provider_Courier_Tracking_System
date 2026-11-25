@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Waiting for you{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ refresh_s }}">{% endblock %}
+{% block main %}
+<h1>Waiting for you</h1>
+{% if items %}
+<table>
+  <thead><tr><th>Needed</th><th>Courier</th><th>Tracking number</th><th>Answer before</th><th></th></tr></thead>
+  <tbody>
+  {% for item in items %}
+    <tr>
+      <td>{{ "Picture code (CAPTCHA)" if item.kind == "captcha" else "One-time code" }}</td>
+      <td>{{ item.provider_code }}</td>
+      <td>{{ item.tracking_number }}</td>
+      <td>{{ item.expires_at }}</td>
+      <td><a class="button" href="/interventions/{{ item.id }}">Answer</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">Nothing is waiting for you. This page checks again every {{ refresh_s }} seconds.</p>
+{% endif %}
+{% endblock %}

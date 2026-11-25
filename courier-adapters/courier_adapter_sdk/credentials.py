@@ -65,6 +65,10 @@ class Secret(Mapping[str, str]):
 class CredentialResolver(Protocol):
     async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret: ...
 
+    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
+        """The user's answer to a challenge, for the job being resumed."""
+        ...
+
 
 class HttpCredentialResolver:
     """Asks the Engine's internal API. One instance (and one connection pool) per worker."""
@@ -84,15 +88,34 @@ class HttpCredentialResolver:
             transport=transport,
         )
 
-    async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret:
-        body = {"credential_ref": credential_ref, "job_id": job_id, "attempt": attempt}
+    async def _post(self, path: str, body: dict[str, object]) -> httpx.Response:
         try:
-            response = await self._client.post("/internal/v1/credentials/resolve", json=body)
+            return await self._client.post(path, json=body)
         except httpx.HTTPError as error:
             # The exception text can include the URL but never the token (it is a header).
             raise CredentialServiceUnavailable(
                 f"the Engine's internal API is unreachable ({type(error).__name__})"
             ) from None
+
+    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
+        body = {"intervention_id": intervention_id, "job_id": job_id, "attempt": attempt}
+        response = await self._post("/internal/v1/interventions/resolve", body)
+        if response.status_code == 200:
+            try:
+                answer = response.json()["response"]
+            except (ValueError, KeyError, TypeError):
+                answer = None
+            if isinstance(answer, str) and answer:
+                return answer
+            raise CredentialServiceUnavailable("the Engine returned an unreadable answer")
+        if response.status_code >= 500:
+            raise CredentialServiceUnavailable(f"the Engine's internal API answered {response.status_code}")
+        reason = "worker token rejected" if response.status_code == 401 else "not permitted for this job"
+        raise CredentialDenied(f"the Engine refused the answer: {reason}")
+
+    async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret:
+        body: dict[str, object] = {"credential_ref": credential_ref, "job_id": job_id, "attempt": attempt}
+        response = await self._post("/internal/v1/credentials/resolve", body)
         if response.status_code == 200:
             try:
                 fields = response.json()["secret"]

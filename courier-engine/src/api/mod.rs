@@ -4,6 +4,7 @@ pub mod auth;
 pub mod dto;
 pub mod health;
 pub mod internal;
+pub mod interventions;
 pub mod providers;
 pub mod tracking_requests;
 
@@ -51,6 +52,9 @@ pub fn router(state: AppState) -> Router {
             "/tracking-requests/{id}/refresh",
             post(tracking_requests::refresh),
         )
+        .route("/interventions", get(interventions::list))
+        .route("/interventions/{id}", get(interventions::get_one))
+        .route("/interventions/{id}/response", post(interventions::respond))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,

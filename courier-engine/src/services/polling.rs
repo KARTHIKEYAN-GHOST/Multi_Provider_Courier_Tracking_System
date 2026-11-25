@@ -136,6 +136,7 @@ pub async fn poll_due(pool: &PgPool, limit: i64) -> Result<PollStats, sqlx::Erro
                     &shipment.tracking_number,
                     JobTrigger::Poll,
                     Uuid::now_v7(),
+                    None,
                 )
                 .await?
             }

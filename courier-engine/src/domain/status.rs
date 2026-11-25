@@ -85,9 +85,15 @@ pub enum ErrorClass {
     AdapterTimeout,
     Internal,
     Unknown,
+    /// The session a lookup was waiting with is gone (worker-reported; the lookup restarts).
+    SessionLost,
     DeliveryLimitExceeded,
     QueueWaitExceeded,
     WorkerLost,
+    /// Nobody answered a one-time-code or CAPTCHA challenge in time.
+    InterventionExpired,
+    /// The job put more challenges to the user than the provider's limit allows.
+    ChallengeLimitExceeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -144,7 +150,7 @@ impl JobOutcome {
 }
 
 impl ErrorClass {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::NetworkTimeout,
         Self::NetworkConnect,
         Self::Http5xx,
@@ -157,9 +163,12 @@ impl ErrorClass {
         Self::AdapterTimeout,
         Self::Internal,
         Self::Unknown,
+        Self::SessionLost,
         Self::DeliveryLimitExceeded,
         Self::QueueWaitExceeded,
         Self::WorkerLost,
+        Self::InterventionExpired,
+        Self::ChallengeLimitExceeded,
     ];
 
     /// Classes only the Engine may assign. They are absent from the message schema, so a
@@ -167,7 +176,11 @@ impl ErrorClass {
     pub fn is_engine_assigned(self) -> bool {
         matches!(
             self,
-            Self::DeliveryLimitExceeded | Self::QueueWaitExceeded | Self::WorkerLost
+            Self::DeliveryLimitExceeded
+                | Self::QueueWaitExceeded
+                | Self::WorkerLost
+                | Self::InterventionExpired
+                | Self::ChallengeLimitExceeded
         )
     }
 }
@@ -291,9 +304,12 @@ mod tests {
                 AdapterTimeout => 9,
                 Internal => 10,
                 Unknown => 11,
-                DeliveryLimitExceeded => 12,
-                QueueWaitExceeded => 13,
-                WorkerLost => 14,
+                SessionLost => 12,
+                DeliveryLimitExceeded => 13,
+                QueueWaitExceeded => 14,
+                WorkerLost => 15,
+                InterventionExpired => 16,
+                ChallengeLimitExceeded => 17,
             }
         }
         fn trigger(t: JobTrigger) -> usize {
@@ -320,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_three_error_classes_are_engine_assigned() {
+    fn exactly_five_error_classes_are_engine_assigned() {
         let engine_only: Vec<_> = ErrorClass::ALL
             .into_iter()
             .filter(|c| c.is_engine_assigned())
@@ -330,7 +346,9 @@ mod tests {
             vec![
                 ErrorClass::DeliveryLimitExceeded,
                 ErrorClass::QueueWaitExceeded,
-                ErrorClass::WorkerLost
+                ErrorClass::WorkerLost,
+                ErrorClass::InterventionExpired,
+                ErrorClass::ChallengeLimitExceeded
             ]
         );
     }

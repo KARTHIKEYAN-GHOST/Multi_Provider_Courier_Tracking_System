@@ -13,8 +13,10 @@ from pydantic import ValidationError
 from courier_adapter_sdk.contracts import (
     ErrorClass,
     ErrorInfo,
+    InterventionRequiredEnvelope,
     JobResult,
     JobResultEnvelope,
+    JobResumeEnvelope,
     JobStartedEnvelope,
     JobTrackEnvelope,
     Outcome,
@@ -28,6 +30,8 @@ MODELS: dict[str, type[Envelope[Any]]] = {
     "job.track": JobTrackEnvelope,
     "job.started": JobStartedEnvelope,
     "job.result": JobResultEnvelope,
+    "job.intervention_required": InterventionRequiredEnvelope,
+    "job.resume": JobResumeEnvelope,
 }
 ALL_VALID = [p for t in MODELS for p in fixture_files("valid", t)]
 ALL_INVALID = [p for t in MODELS for p in fixture_files("invalid", t)]
@@ -97,7 +101,13 @@ def test_workers_cannot_express_engine_only_error_classes() -> None:
     schema = json.loads((CONTRACTS / "schemas" / "v1" / "common.schema.json").read_text())
     assert [c.value for c in ErrorClass] == schema["$defs"]["workerErrorClass"]["enum"]
     assert [o.value for o in Outcome] == schema["$defs"]["outcome"]["enum"]
-    for engine_only in ("DELIVERY_LIMIT_EXCEEDED", "QUEUE_WAIT_EXCEEDED", "WORKER_LOST"):
+    for engine_only in (
+        "DELIVERY_LIMIT_EXCEEDED",
+        "QUEUE_WAIT_EXCEEDED",
+        "WORKER_LOST",
+        "INTERVENTION_EXPIRED",
+        "CHALLENGE_LIMIT_EXCEEDED",
+    ):
         with pytest.raises(ValidationError):
             ErrorInfo.model_validate({"class": engine_only, "message": "x", "retryable": True})
 

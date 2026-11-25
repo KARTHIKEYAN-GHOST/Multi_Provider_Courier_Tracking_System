@@ -15,4 +15,8 @@ pub mod routing {
     pub fn job_track(adapter_key: &str) -> String {
         format!("job.track.v1.{adapter_key}")
     }
+
+    pub fn job_resume(adapter_key: &str) -> String {
+        format!("job.resume.v1.{adapter_key}")
+    }
 }

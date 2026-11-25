@@ -181,5 +181,36 @@
       "credential_ref"
     ],
     "reason": "a credential reference is an opaque UUID, never a secret"
+  },
+  "job.resume.missing_intervention_id.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "a resume without its intervention cannot fetch the answer"
+  },
+  "job.intervention_required.unknown_kind.json": {
+    "keyword": "enum",
+    "path": [
+      "payload",
+      "kind"
+    ],
+    "reason": "only otp and captcha exist"
+  },
+  "job.intervention_required.svg_image.json": {
+    "keyword": "enum",
+    "path": [
+      "payload",
+      "image",
+      "content_type"
+    ],
+    "reason": "SVG can carry scripts; only raster images are accepted"
+  },
+  "job.intervention_required.missing_session_ref.json": {
+    "keyword": "required",
+    "path": [
+      "payload"
+    ],
+    "reason": "without the session the lookup cannot be continued"
   }
 }

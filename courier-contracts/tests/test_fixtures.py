@@ -25,8 +25,14 @@ EXPECTATIONS_FILE = INVALID_DIR / "_expectations.json"
 PRODUCED_DIR = ROOT / "fixtures" / "v1" / "produced"
 ENGINE_PRODUCED_TYPES = ("job.track",)
 
-MESSAGE_TYPES = ("job.track", "job.started", "job.result")
-ENGINE_ONLY_ERROR_CLASSES = {"DELIVERY_LIMIT_EXCEEDED", "QUEUE_WAIT_EXCEEDED", "WORKER_LOST"}
+MESSAGE_TYPES = ("job.track", "job.started", "job.result", "job.intervention_required", "job.resume")
+ENGINE_ONLY_ERROR_CLASSES = {
+    "DELIVERY_LIMIT_EXCEEDED",
+    "QUEUE_WAIT_EXCEEDED",
+    "WORKER_LOST",
+    "INTERVENTION_EXPIRED",
+    "CHALLENGE_LIMIT_EXCEEDED",
+}
 
 
 def load_json(path: Path) -> Any:

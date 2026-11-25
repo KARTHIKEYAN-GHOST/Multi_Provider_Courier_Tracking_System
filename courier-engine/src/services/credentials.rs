@@ -80,6 +80,11 @@ impl PgSecretStore {
     pub fn new(master: MasterKey) -> Self {
         PgSecretStore { master }
     }
+
+    /// The master key, for other data encrypted the same way (answers to challenges).
+    pub fn master(&self) -> &MasterKey {
+        &self.master
+    }
 }
 
 impl SecretStore for PgSecretStore {

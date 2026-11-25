@@ -28,11 +28,13 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 import psycopg
+import redis
 from psycopg.rows import dict_row
 
 REPO = Path(__file__).resolve().parents[1]
 ENGINE_DIR = REPO / "courier-engine"
 ADAPTERS_DIR = REPO / "courier-adapters"
+INTERFACE_DIR = REPO / "courier-human-interface"
 E2E_DATABASE = "courier_e2e"
 
 # Timings of the dummy provider during the tests: short, so failures play out in seconds.
@@ -70,6 +72,28 @@ def wait_until[T](probe: Callable[[], T], timeout_s: float, what: str, interval_
         if time.monotonic() > deadline:
             raise AssertionError(f"timed out after {timeout_s}s waiting for {what}")
         time.sleep(interval_s)
+
+
+def find_redis(settings: dict[str, str]) -> str | None:
+    """A Redis for the workers' sessions: the one named in the environment or ``.env``, else
+    the development stack's, else a local one. ``None`` if none answers (those tests skip)."""
+    candidates = [
+        os.environ.get("E2E_REDIS_URL"),
+        settings.get("WORKER_SESSION_STORE_URL"),
+        f"redis://:{settings.get('REDIS_PASSWORD', 'dev_redis_password')}"
+        f"@127.0.0.1:{settings.get('REDIS_HOST_PORT', '56379')}/0",
+        "redis://127.0.0.1:6379/0",
+    ]
+    for url in filter(None, candidates):
+        client = redis.Redis.from_url(url, socket_connect_timeout=1, socket_timeout=2)
+        try:
+            client.ping()
+            return url
+        except redis.RedisError:
+            continue
+        finally:
+            client.close()
+    return None
 
 
 class Supervised:
@@ -154,6 +178,11 @@ class Stack:
         self.log_dir = log_dir
         self.database_url = self._database_url(E2E_DATABASE)
         self.port, self.internal_port, self.site_port = free_port(), free_port(), free_port()
+        self.interface_port = free_port()
+        self.interface_url = f"http://127.0.0.1:{self.interface_port}"
+        # Sessions of this run live under the run's own key prefix and are removed at the end.
+        self.redis_url = find_redis(self.settings)
+        self.session_prefix = f"{self.prefix}courier:session:"
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.internal_url = f"http://127.0.0.1:{self.internal_port}"
         self.site_url = f"http://127.0.0.1:{self.site_port}"
@@ -213,7 +242,15 @@ class Stack:
         self.workers = {
             "dummy": worker("dummy", WORKER_ID="e2e-worker"),
             # The scraping adapter is pointed at the demo courier website started below.
-            "demosite": worker("demosite", DEMOSITE_BASE_URL=self.site_url),
+            # It can wait for a person: sessions go to Redis (if there is one), answers come
+            # from the Engine's internal API with the token set in conftest.py.
+            "demosite": worker(
+                "demosite",
+                DEMOSITE_BASE_URL=self.site_url,
+                WORKER_ENGINE_INTERNAL_URL=self.internal_url,
+                WORKER_SESSION_STORE_URL=self.redis_url or "",
+                WORKER_SESSION_KEY=secrets.token_hex(32),
+            ),
             # The DHL adapter is pointed at the test's fake DHL API; its token is set per test.
             "dhl": worker("dhl", WORKER_ENGINE_INTERNAL_URL=self.internal_url),
         }
@@ -224,6 +261,19 @@ class Stack:
             ADAPTERS_DIR,
             {**os.environ, "DEMO_SITE_PORT": str(self.site_port)},
             log_dir / "demo-site.log",
+            restart=False,
+        )
+        self.interface = Supervised(
+            "human-interface",
+            [str(INTERFACE_DIR / ".venv" / "bin" / "python"), "-m", "human_interface"],
+            INTERFACE_DIR,
+            {
+                **os.environ,
+                "HUMAN_INTERFACE_ENGINE_URL": self.base_url,
+                "HUMAN_INTERFACE_PORT": str(self.interface_port),
+                "HUMAN_INTERFACE_HOST": "127.0.0.1",
+            },
+            log_dir / "human-interface.log",
             restart=False,
         )
         self._management = httpx.Client(
@@ -323,6 +373,38 @@ class Stack:
         self.site.start()
         wait_until(lambda: self._up(f"{self.site_url}/healthz"), 15, "the demo courier website")
 
+    def start_interface(self) -> None:
+        self.interface.start()
+        wait_until(lambda: self._up(f"{self.interface_url}/healthz"), 20, "the human interface")
+
+    def session_keys(self) -> list[str]:
+        """Names of the sessions this run's workers currently hold in Redis."""
+        assert self.redis_url is not None
+        client = redis.Redis.from_url(self.redis_url)
+        try:
+            return sorted(key.decode() for key in client.scan_iter(match=f"{self.session_prefix}*"))
+        finally:
+            client.close()
+
+    def session_values(self) -> list[bytes]:
+        assert self.redis_url is not None
+        client = redis.Redis.from_url(self.redis_url)
+        try:
+            return [client.get(key) or b"" for key in client.scan_iter(match=f"{self.session_prefix}*")]
+        finally:
+            client.close()
+
+    def drop_sessions(self) -> int:
+        """Deletes this run's sessions (only keys under the run's own prefix)."""
+        if self.redis_url is None:
+            return 0
+        client = redis.Redis.from_url(self.redis_url)
+        try:
+            keys = list(client.scan_iter(match=f"{self.session_prefix}*"))
+            return int(client.delete(*keys)) if keys else 0
+        finally:
+            client.close()
+
     @staticmethod
     def _up(url: str) -> bool:
         try:
@@ -402,7 +484,9 @@ class Stack:
         for worker in self.workers.values():
             worker.stop()
         self.site.stop()
+        self.interface.stop()
         self.engine.stop()
+        self.drop_sessions()
         self.delete_topology()
         self._management.close()
 

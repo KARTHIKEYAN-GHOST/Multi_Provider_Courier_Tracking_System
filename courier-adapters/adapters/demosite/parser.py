@@ -7,6 +7,8 @@ followed or interpreted as an instruction.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
 from bs4 import BeautifulSoup, Tag
@@ -30,6 +32,34 @@ def _location(place: str) -> Location | None:
         return None
     city, _, country = (part.strip() for part in place.rpartition(","))
     return Location(city=city or None, country=country or None, raw=place[:500])
+
+
+_TOKEN = re.compile(r"^[0-9a-f]{32}$")
+
+
+@dataclass(frozen=True)
+class Verification:
+    """The site's verification step, reduced to what the adapter needs to continue."""
+
+    kind: str  # "otp" or "captcha"
+    token: str
+    #: The site said the previous answer was wrong.
+    retry: bool
+
+
+def find_verification(html: str) -> Verification | None:
+    """The verification step, if the page is one instead of a tracking page.
+
+    Only two values are taken from the page, and both are checked against a fixed shape; no
+    text and no link from the page is used.
+    """
+    section = BeautifulSoup(html, "html.parser").find("section", id="verify")
+    if not isinstance(section, Tag):
+        return None
+    kind, token = section.get("data-kind"), section.get("data-token")
+    if kind not in ("otp", "captcha") or not isinstance(token, str) or not _TOKEN.match(token):
+        raise SchemaDrift("the verification page does not have the expected structure")
+    return Verification(str(kind), token, section.find(class_="verify-error") is not None)
 
 
 def parse_tracking_page(html: str) -> list[TrackingEvent]:

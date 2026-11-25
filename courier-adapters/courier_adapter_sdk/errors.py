@@ -93,6 +93,14 @@ class SchemaDrift(AdapterError):
     retryable = False
 
 
+class SavedSessionLost(AdapterError):
+    """The session saved while waiting for a human answer is gone (expired, or the session
+    store lost it). The Engine starts the lookup again, which leads to a fresh challenge."""
+
+    error_class = ErrorClass.SESSION_LOST
+    retryable = True
+
+
 class ShipmentNotFound(Exception):
     """The provider does not know the tracking number. This is an answer, not a failure."""
 

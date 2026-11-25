@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl smoke test-e2e master-key run-demo-site maintenance unmapped
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -20,17 +20,18 @@ setup: env ## Install project-local Python environments (uv-managed Python 3.13;
 	cd courier-contracts && uv sync
 	cd courier-adapters && uv sync
 	cd tests-e2e && uv sync
+	cd courier-human-interface && uv sync
 
 compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
 	$(COMPOSE) config --quiet && echo "compose file OK"
 
-up-deps: env ## Start PostgreSQL and RabbitMQ and wait until both are healthy
-	$(COMPOSE) up -d --wait postgres rabbitmq
+up-deps: env ## Start PostgreSQL, RabbitMQ and Redis and wait until they are healthy
+	$(COMPOSE) up -d --wait postgres rabbitmq redis
 
 verify-deps: env ## Check databases, RabbitMQ vhost, users and permissions
 	bash infrastructure/verify-deps.sh "$(DOCKER)"
 
-up: env ## Build and start the stack: PostgreSQL, RabbitMQ, Engine, dummy + demo-site workers, demo courier website
+up: env ## Build and start the stack: PostgreSQL, RabbitMQ, Redis, Engine, dummy + demo-site workers, demo courier website, human interface
 	$(COMPOSE) up -d --build --wait
 
 up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY and DHL_WORKER_TOKEN in .env; see docs/phase-6.md)
@@ -38,6 +39,18 @@ up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY an
 
 master-key: ## Print a new random master key for CREDENTIAL_MASTER_KEY (shown once; nothing is stored)
 	@cd courier-engine && cargo run --quiet -- admin generate-master-key
+
+session-key: ## Print a new random key for WORKER_SESSION_KEY (shown once; nothing is stored)
+	@cd courier-adapters && uv run python -c "import secrets; print(secrets.token_hex(32))"
+
+run-human-interface: env ## Run the human interface on http://127.0.0.1:8088 (needs a running Engine)
+	cd courier-human-interface && uv run python -m human_interface
+
+test-human-interface: ## Human interface: ruff, mypy, pytest (needs nothing running)
+	cd courier-human-interface && uv run ruff format --check .
+	cd courier-human-interface && uv run ruff check .
+	cd courier-human-interface && uv run mypy
+	cd courier-human-interface && uv run pytest
 
 maintenance: env ## Run archiving and retention once, now (the Engine also does this periodically)
 	cd courier-engine && cargo run --quiet -- admin run-maintenance
@@ -82,7 +95,7 @@ update-contract-fixtures: ## Regenerate the Engine-produced contract fixtures (d
 	cd courier-engine && UPDATE_CONTRACT_FIXTURES=1 cargo test --quiet --test contracts the_engines_job_track_message
 	$(MAKE) test-contracts
 
-test-adapters: env ## Adapter SDK and adapters (dummy, dhl, demosite): ruff, mypy, pytest (needs RabbitMQ: make up-deps)
+test-adapters: env ## Adapter SDK and adapters (dummy, dhl, demosite): ruff, mypy, pytest (needs RabbitMQ: make up-deps; the Redis test is skipped without Redis)
 	cd courier-adapters && uv run ruff format --check .
 	cd courier-adapters && uv run ruff check .
 	cd courier-adapters && uv run mypy
@@ -94,6 +107,7 @@ run-worker: env ## Run the dummy adapter worker (needs RabbitMQ and a running En
 test-e2e: env ## End-to-end: real Engine + worker processes on a private database and queues (needs make up-deps)
 	cd courier-engine && cargo build --quiet
 	cd courier-adapters && uv sync --quiet
+	cd courier-human-interface && uv sync --quiet
 	cd tests-e2e && uv run ruff format --check . && uv run ruff check . && uv run pytest
 
-test: test-contracts test-engine test-adapters test-e2e ## Run every test suite
+test: test-contracts test-engine test-adapters test-human-interface test-e2e ## Run every test suite

@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .contracts import JOB_RESULT, JOB_STARTED, JOB_TRACK
+from .contracts import JOB_INTERVENTION_REQUIRED, JOB_RESULT, JOB_RESUME, JOB_STARTED, JOB_TRACK
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,7 @@ class WorkerRoutes:
     events_exchange: str
     started_routing_key: str
     result_routing_key: str
+    intervention_routing_key: str
     max_message_bytes: int
 
 
@@ -52,13 +53,25 @@ def routes_for(adapter_key: str, path: Path, prefix: str = "") -> WorkerRoutes:
             f"topology has {len(queues)} queues bound for {job_key!r}; "
             f"adapter {adapter_key!r} needs exactly one"
         )
-    if routing[JOB_STARTED]["exchange"] != routing[JOB_RESULT]["exchange"]:
-        raise ValueError("job.started and job.result must share one exchange")
+    # A resumed lookup arrives on the same queue as a new one: one consumer, one delivery limit.
+    resume_key = routing[JOB_RESUME]["routing_key"].format(adapter_key=adapter_key)
+    resume_queues = [
+        queue["name"]
+        for queue in topology["queues"]
+        for binding in queue.get("bindings", [])
+        if binding["exchange"] == routing[JOB_RESUME]["exchange"] and binding["routing_key"] == resume_key
+    ]
+    if resume_queues != queues:
+        raise ValueError(f"{resume_key!r} must be bound to the adapter's job queue {queues[0]!r}")
+    events = {routing[t]["exchange"] for t in (JOB_STARTED, JOB_RESULT, JOB_INTERVENTION_REQUIRED)}
+    if len(events) != 1:
+        raise ValueError("job.started, job.result and job.intervention_required must share one exchange")
 
     return WorkerRoutes(
         job_queue=prefix + queues[0],
         events_exchange=prefix + routing[JOB_RESULT]["exchange"],
         started_routing_key=routing[JOB_STARTED]["routing_key"],
         result_routing_key=routing[JOB_RESULT]["routing_key"],
+        intervention_routing_key=routing[JOB_INTERVENTION_REQUIRED]["routing_key"],
         max_message_bytes=int(topology["limits"]["max_message_bytes"]),
     )

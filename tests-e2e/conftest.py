@@ -20,7 +20,9 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
         instance.start_engine()
         instance.start_worker()
         instance.start_site()
-        instance.start_worker(adapter="demosite")
+        # The scraping worker may fetch users' answers to challenges: it gets its own token.
+        token = instance.admin("create-worker-token", "--adapter", "demosite", "--name", "e2e-answers")
+        instance.start_worker(adapter="demosite", WORKER_TOKEN=token.split("worker_token: ")[1].split()[0])
         yield instance
     finally:
         instance.shutdown()

@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod dead_letter;
 pub mod dispatch;
 pub mod events;
+pub mod interventions;
 pub mod mappings;
 pub mod polling;
 pub mod reaper;

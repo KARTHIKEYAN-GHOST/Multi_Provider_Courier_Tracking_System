@@ -30,7 +30,7 @@ Every message is wrapped in the same envelope.
 | Field | Meaning |
 |---|---|
 | `message_id` | Unique per message. Consumers deduplicate on it. |
-| `type` | `job.track`, `job.started` or `job.result` |
+| `type` | `job.track`, `job.started`, `job.result`, `job.intervention_required` or `job.resume` |
 | `schema_version` | `"1.0"` |
 | `occurred_at` | When the sender created the message |
 | `correlation_id` | Created by the Engine for the API request; copied unchanged into every later message and log line |
@@ -38,13 +38,15 @@ Every message is wrapped in the same envelope.
 | `producer` | Who sent it, e.g. `engine@0.1.0`, `adapter-dummy@0.1.0` |
 | `payload` | The message itself |
 
-## The three messages
+## The messages
 
 | Message | Direction | Exchange → queue | Meaning |
 |---|---|---|---|
 | `job.track` | Engine → worker | `courier.jobs` → `adapter.<key>.jobs` | Look this shipment up. One message per logical attempt. |
 | `job.started` | worker → Engine | `courier.events` → `engine.events` | One physical execution began. Advisory. |
 | `job.result` | worker → Engine | `courier.events` → `engine.events` | The outcome of one physical execution. |
+| `job.intervention_required` | worker → Engine | `courier.events` → `engine.events` | One execution stopped: the provider wants a one-time code or CAPTCHA answer from a person. |
+| `job.resume` | Engine → worker | `courier.jobs` → `adapter.<key>.jobs` | The person answered: continue the same attempt. |
 
 ### `job.track`
 
@@ -74,11 +76,30 @@ the worker executes), `delivery_count` (0 on the first delivery), `worker_id`, `
 `events` contain the provider's own wording (`raw_status`); the Engine maps it to a normalized
 status. Adapters never normalize.
 
+### `job.intervention_required` and `job.resume`
+
+See [phase-8.md](phase-8.md) for the workflow.
+
+`job.intervention_required` carries the execution identity and `finished_at`, plus:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `otp` or `captcha` |
+| `prompt` | Text for the user, written by the adapter (1–500 characters) |
+| `session_ref` | Opaque ID of the session the worker saved. Not the session, and useless without the workers' session key. |
+| `expires_in_s` | Optional, 30–3600: how long the provider accepts an answer |
+| `response_format` | Optional `{min_length, max_length, charset}` with charset `digits`, `alphanumeric` or `any`; the Engine refuses answers of another form |
+| `image` | Optional `{content_type, data}`: PNG, JPEG, GIF or WebP, base64. Optional fields are omitted, not `null`. |
+
+`job.resume` is `job.track` plus two required fields: `intervention_id` (what the worker
+exchanges for the user's answer over the internal API) and `session_ref`. It keeps the
+attempt number: resuming is not a retry. Neither message ever contains the answer or the session.
+
 ## Error classes
 
 | Reported by workers | Retryable |
 |---|---|
-| `NETWORK_TIMEOUT`, `NETWORK_CONNECT`, `HTTP_5XX`, `RATE_LIMITED`, `ADAPTER_TIMEOUT`, `INTERNAL` | yes |
+| `NETWORK_TIMEOUT`, `NETWORK_CONNECT`, `HTTP_5XX`, `RATE_LIMITED`, `ADAPTER_TIMEOUT`, `INTERNAL`, `SESSION_LOST` | yes |
 | `BLOCKED`, `AUTH_INVALID`, `AUTH_EXPIRED`, `PARSE_ERROR`, `SCHEMA_DRIFT`, `UNKNOWN` | no |
 
 The worker states `retryable` in the message; the Engine decides whether attempts are left.
@@ -90,12 +111,14 @@ Assigned only by the Engine, never accepted from a worker:
 | `QUEUE_WAIT_EXCEEDED` | No worker started the attempt before its queue deadline |
 | `WORKER_LOST` | An execution started but no result arrived in time |
 | `DELIVERY_LIMIT_EXCEEDED` | RabbitMQ dead-lettered the job message after repeated failed deliveries |
+| `INTERVENTION_EXPIRED` | Nobody answered a one-time-code or CAPTCHA challenge in time (job `EXPIRED`) |
+| `CHALLENGE_LIMIT_EXCEEDED` | The provider kept asking; the per-job limit of challenges was reached |
 
 ## What happens to a bad message
 
 | Situation | Result |
 |---|---|
-| Worker receives an invalid, oversized or foreign `job.track` | Rejected → `adapter.<key>.jobs.dlq` → the Engine closes the attempt |
+| Worker receives an invalid, oversized or foreign `job.track` or `job.resume` | Rejected → `adapter.<key>.jobs.dlq` → the Engine closes the attempt |
 | Engine receives an invalid event or one for an unknown job | Rejected → `engine.events.dlq` (parked for operators) |
 | Worker cannot publish a result | Job message stays unacknowledged, the worker reconnects, RabbitMQ redelivers; after the delivery limit the message is dead-lettered |
 

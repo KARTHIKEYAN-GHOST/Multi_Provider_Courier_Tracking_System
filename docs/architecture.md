@@ -186,6 +186,8 @@ Every message uses one envelope: `message_id`, `type`, `schema_version`, `occurr
 
 **Failure.** Retryable error → `RETRYING` with exponential backoff → the retry scheduler opens the next attempt. Non-retryable or attempts exhausted → `FAILED`. A message that exceeds the delivery limit is dead-lettered and handled by the dead-letter consumer; the reaper is the backstop. Details and the three separate timers (queue wait, adapter timeout, execution recovery) are in `milestone-1.md` sections 1.2–1.7.
 
+> Phase 8 is built. It differs from the sketch below in a few deliberate points (resume shares the jobs queue, portable sessions only, API-key authentication instead of token links); see [phase-8.md](phase-8.md).
+
 **OTP / CAPTCHA (Phase 8).**
 1. The adapter detects the challenge, saves the session, and returns `InterventionRequired`. The job message is acked; nothing waits.
 2. Engine: job → `WAITING_FOR_*`; a `human_interventions` row with expiry and a hashed single-use token.

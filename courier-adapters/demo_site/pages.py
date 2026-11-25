@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 
+from .challenges import Verifications, captcha_answer, captcha_png, expected_answer, otp_code
+
 IST = timezone(timedelta(hours=5, minutes=30), "IST")
 _STEPS = [
     ("Booked", "Chennai, IN", "Shipment booked at origin"),
@@ -91,9 +93,69 @@ def _redesigned_page(number: str) -> str:
     )
 
 
+_verifications = Verifications()
+
+
+def _verify_page(kind: str, number: str, *, retry: bool = False) -> Page:
+    """The step in front of the tracking page: enter the texted code, or read the picture."""
+    token = _verifications.start(kind, number)
+    if kind == "otp":
+        ask = "We sent a 6-digit code to the phone number registered for this shipment."
+        picture = ""
+    else:
+        ask = "Type the digits shown in the picture."
+        picture = f'\n  <img class="captcha" src="/captcha/{token}.png" alt="verification picture">'
+    error = '\n  <p class="verify-error">That was not correct. Please try again.</p>' if retry else ""
+    return Page(
+        200,
+        _layout(
+            "Verification",
+            f'<section id="verify" data-kind="{kind}" data-token="{token}">\n'
+            f"  <h2>Verification required</h2>{error}\n  <p>{ask}</p>{picture}\n"
+            '  <form method="post" action="/verify">\n'
+            f'    <input type="hidden" name="token" value="{token}">\n'
+            '    <input name="answer" autocomplete="off" maxlength="12">\n'
+            "    <button>Continue</button>\n  </form>\n</section>",
+        ),
+    )
+
+
+def verify(token: str, answer: str) -> Page:
+    """The submitted verification form. A token works once; a wrong answer gets a new step."""
+    opened = _verifications.finish(token)
+    if opened is None:
+        return Page(400, _layout("Expired", '<p class="verify-expired">This verification has expired.</p>'))
+    kind, number = opened
+    if answer.strip() != expected_answer(kind, number):
+        return _verify_page(kind, number, retry=True)
+    return Page(200, _tracking_page(number, 3))
+
+
+def captcha_image(token: str) -> bytes | None:
+    """The picture for an open CAPTCHA step."""
+    opened = _verifications.peek(token)
+    if opened is None or opened[0] != "captcha":
+        return None
+    return captcha_png(captcha_answer(opened[1]))
+
+
+def inbox(number: str) -> Page:
+    """The pretend phone of the consignee: shows the code the site 'texted'. Demo only."""
+    return Page(
+        200,
+        _layout(
+            "Phone inbox",
+            f'<section id="inbox"><p>Demo Courier: your verification code is '
+            f'<strong class="otp">{otp_code(number)}</strong>.</p></section>',
+        ),
+    )
+
+
 def render(number: str) -> Page:
     """The site's answer for a tracking number."""
     kind = number.upper().removeprefix("DEMO-").split("-", 1)[0]
+    if kind in ("OTP", "CAPTCHA"):
+        return _verify_page(kind.lower(), number)
     if kind == "OK":
         return Page(200, _tracking_page(number, 5))
     if kind == "TRANSIT":

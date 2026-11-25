@@ -65,5 +65,7 @@ pub async fn reap_expired(
         }
     }
     tx.commit().await?;
+    // The third thing a job can wait for: a person. Unanswered challenges end the job.
+    closed += super::interventions::expire_due(pool, limit).await?;
     Ok(closed)
 }

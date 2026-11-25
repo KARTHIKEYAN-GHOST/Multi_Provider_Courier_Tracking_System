@@ -85,6 +85,60 @@ pub struct JobTrack {
     /// provider needs no credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<Uuid>,
+    /// `job.resume` only: the answered intervention. The worker exchanges it for the user's
+    /// answer over the internal API; the answer itself never travels in a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intervention_id: Option<Uuid>,
+    /// `job.resume` only: the session reference the worker sent with its challenge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ref: Option<Uuid>,
+}
+
+/// `job.resume`: continues a lookup that stopped for a human answer. Same payload as
+/// `job.track` with `intervention_id` and `session_ref` set.
+pub const JOB_RESUME: &str = "job.resume";
+pub const JOB_INTERVENTION_REQUIRED: &str = "job.intervention_required";
+
+/// `job.intervention_required`: an execution stopped because the provider wants a one-time
+/// code or a CAPTCHA answer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterventionRequired {
+    pub job_id: Uuid,
+    pub attempt: i32,
+    pub execution_id: Uuid,
+    pub delivery_count: i32,
+    pub worker_id: String,
+    pub adapter_key: String,
+    pub adapter_version: String,
+    #[serde(with = "utc_timestamp")]
+    pub started_at: DateTime<Utc>,
+    #[serde(with = "utc_timestamp")]
+    pub finished_at: DateTime<Utc>,
+    /// `otp` or `captcha`.
+    pub kind: String,
+    pub prompt: String,
+    pub session_ref: Uuid,
+    #[serde(default)]
+    pub expires_in_s: Option<i32>,
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
+    #[serde(default)]
+    pub image: Option<ChallengeImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseFormat {
+    pub min_length: i32,
+    pub max_length: i32,
+    /// `digits`, `alphanumeric` or `any`.
+    pub charset: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeImage {
+    pub content_type: String,
+    /// Base64.
+    pub data: String,
 }
 
 pub const JOB_STARTED: &str = "job.started";
@@ -167,6 +221,7 @@ pub struct WorkerError {
 pub enum IncomingEvent {
     Started(Envelope<JobStarted>),
     Result(Envelope<JobResult>),
+    InterventionRequired(Envelope<InterventionRequired>),
 }
 
 impl IncomingEvent {
@@ -174,6 +229,7 @@ impl IncomingEvent {
         match self {
             IncomingEvent::Started(e) => e.message_id,
             IncomingEvent::Result(e) => e.message_id,
+            IncomingEvent::InterventionRequired(e) => e.message_id,
         }
     }
 }
@@ -201,6 +257,11 @@ pub fn parse_incoming_event(body: &[u8]) -> Result<IncomingEvent, Invalid> {
             validate::job_result(&value["payload"])?;
             Ok(IncomingEvent::Result(typed(value)?))
         }
+        Some(JOB_INTERVENTION_REQUIRED) => {
+            validate::envelope(&value, JOB_INTERVENTION_REQUIRED)?;
+            validate::intervention_required(&value["payload"])?;
+            Ok(IncomingEvent::InterventionRequired(typed(value)?))
+        }
         Some(other) => Err(Invalid(format!("unsupported message type {other:?}"))),
         None => Err(Invalid("type is missing or not a string".into())),
     }
@@ -210,8 +271,15 @@ pub fn parse_incoming_event(body: &[u8]) -> Result<IncomingEvent, Invalid> {
 /// they are dead-lettered).
 pub fn parse_job_track(body: &[u8]) -> Result<Envelope<JobTrack>, Invalid> {
     let value = parse_json(body)?;
-    validate::envelope(&value, JOB_TRACK)?;
-    validate::job_track(&value["payload"])?;
+    // A dead-lettered job.resume names its job and attempt in the same fields and is
+    // handled the same way.
+    if value.get("type").and_then(Value::as_str) == Some(JOB_RESUME) {
+        validate::envelope(&value, JOB_RESUME)?;
+        validate::job_resume(&value["payload"])?;
+    } else {
+        validate::envelope(&value, JOB_TRACK)?;
+        validate::job_track(&value["payload"])?;
+    }
     typed(value)
 }
 
@@ -417,6 +485,64 @@ mod validate {
             uuid_field(p, "credential_ref", path)?;
         }
         timestamp_field(p, "expires_at", path)
+    }
+
+    pub fn job_resume(p: &Value) -> Check {
+        job_track(p)?;
+        uuid_field(p, "intervention_id", "payload")?;
+        uuid_field(p, "session_ref", "payload")
+    }
+
+    pub fn intervention_required(p: &Value) -> Check {
+        let path = "payload";
+        execution_identity(p, path)?;
+        timestamp_field(p, "finished_at", path)?;
+        if !matches!(string(p, "kind", path)?, "otp" | "captcha") {
+            return fail(path, "kind must be otp or captcha");
+        }
+        if !length(string(p, "prompt", path)?, 1, 500) {
+            return fail(path, "prompt must be 1 to 500 characters");
+        }
+        uuid_field(p, "session_ref", path)?;
+        if p.get("expires_in_s").is_some() {
+            integer(p, "expires_in_s", path, 30, 3600)?;
+        }
+        if let Some(format) = p.get("response_format") {
+            let path = "payload.response_format";
+            object(format, path)?;
+            let min = integer(format, "min_length", path, 1, 64)?;
+            let max = integer(format, "max_length", path, 1, 64)?;
+            if min > max {
+                return fail(path, "min_length is greater than max_length");
+            }
+            if !matches!(
+                string(format, "charset", path)?,
+                "digits" | "alphanumeric" | "any"
+            ) {
+                return fail(path, "charset is not a known character set");
+            }
+        }
+        if let Some(image) = p.get("image") {
+            let path = "payload.image";
+            object(image, path)?;
+            if !matches!(
+                string(image, "content_type", path)?,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            ) {
+                return fail(path, "content_type is not an accepted image type");
+            }
+            let data = string(image, "data", path)?;
+            let body = data.trim_end_matches('=');
+            let well_formed = (4..=140_000).contains(&data.len())
+                && data.len() - body.len() <= 2
+                && body
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/');
+            if !well_formed {
+                return fail(path, "data is not base64 of an acceptable size");
+            }
+        }
+        Ok(())
     }
 
     /// Fields shared by `job.started` and `job.result`.

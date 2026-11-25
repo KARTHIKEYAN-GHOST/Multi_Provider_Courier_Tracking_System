@@ -23,8 +23,9 @@ class Outcome(StrEnum):
 class ErrorClass(StrEnum):
     """Error classes a worker may report.
 
-    ``DELIVERY_LIMIT_EXCEEDED``, ``QUEUE_WAIT_EXCEEDED`` and ``WORKER_LOST`` are deliberately
-    absent: only the Engine assigns them.
+    ``DELIVERY_LIMIT_EXCEEDED``, ``QUEUE_WAIT_EXCEEDED``, ``WORKER_LOST``,
+    ``INTERVENTION_EXPIRED`` and ``CHALLENGE_LIMIT_EXCEEDED`` are deliberately absent: only
+    the Engine assigns them.
     """
 
     NETWORK_TIMEOUT = "NETWORK_TIMEOUT"
@@ -39,6 +40,8 @@ class ErrorClass(StrEnum):
     ADAPTER_TIMEOUT = "ADAPTER_TIMEOUT"
     INTERNAL = "INTERNAL"
     UNKNOWN = "UNKNOWN"
+    #: The session saved for a challenge is gone; the lookup has to start again.
+    SESSION_LOST = "SESSION_LOST"
 
 
 class Location(Contract):

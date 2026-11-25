@@ -7,6 +7,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/milestone-1.md](docs/milestone-1.md) — Milestone 1 plan and acceptance criteria
 - [docs/phase-6.md](docs/phase-6.md) — credentials, the DHL and demo-site adapters, rate limiting
 - [docs/phase-7.md](docs/phase-7.md) — automatic re-polling, status-mapping management, archiving and retention
+- [docs/phase-8.md](docs/phase-8.md) — one-time codes and CAPTCHAs: sessions in Redis, the intervention workflow, the human interface
 
 ## Status
 
@@ -20,6 +21,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 5 — First end-to-end integration (containers, end-to-end suite) | done |
 | 6 — Encrypted credentials and resolve API, DHL adapter, scraping adapter (demo site), provider rate limiting | done |
 | 7 — Automatic re-polling, status-mapping management, archiving and retention | done |
+| 8 — Redis sessions, OTP / CAPTCHA intervention workflow, minimal human interface | done |
 
 ## Layout
 
@@ -28,7 +30,8 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | `courier-engine/` | Rust Engine: HTTP API, database migrations, business logic |
 | `courier-contracts/` | JSON Schemas, fixtures and RabbitMQ topology shared by Rust and Python |
 | `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts, credentials, HTTP), the dummy, DHL and demo-site adapters, and the demo courier website |
-| `infrastructure/` | Docker Compose, PostgreSQL and RabbitMQ configuration |
+| `courier-human-interface/` | Small FastAPI site where a user answers one-time-code and CAPTCHA challenges (thin client of the Engine API) |
+| `infrastructure/` | Docker Compose, PostgreSQL, RabbitMQ and Redis configuration |
 | `tests-e2e/` | End-to-end tests: real Engine and worker processes on a private database and queues |
 | `docs/` | Architecture, contracts and plans |
 

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.courier-tracking.invalid/v1/job.resume.schema.json",
+  "title": "job.resume (v1) \u2014 Engine to adapter worker",
+  "description": "Asks a worker to continue a lookup that stopped for a human answer. It carries everything job.track carries, plus the intervention and the saved session. The answer itself is NOT in the message: the worker fetches it from the Engine's internal API with intervention_id. Same attempt as the job.track it continues; the broker may deliver it more than once.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "job.resume"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "attempt",
+        "adapter_key",
+        "provider_code",
+        "tracking_number",
+        "timeout_ms",
+        "expires_at",
+        "intervention_id",
+        "session_ref"
+      ],
+      "properties": {
+        "job_id": {
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "attempt": {
+          "$ref": "common.schema.json#/$defs/attempt"
+        },
+        "adapter_key": {
+          "$ref": "common.schema.json#/$defs/key"
+        },
+        "provider_code": {
+          "$ref": "common.schema.json#/$defs/key"
+        },
+        "tracking_number": {
+          "$ref": "common.schema.json#/$defs/trackingNumber"
+        },
+        "params": {
+          "description": "Provider-specific, non-secret lookup parameters.",
+          "type": "object"
+        },
+        "timeout_ms": {
+          "description": "Adapter execution budget, measured by the worker from the moment execution starts. Queue time is not deducted.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "expires_at": {
+          "description": "Queue-wait deadline. A worker drops a FIRST delivery received after this instant; redeliveries are always executed. Independent of timeout_ms.",
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "credential_ref": {
+          "description": "Opaque reference to the credential the adapter needs; never the secret. The worker exchanges it for the secret over the Engine's internal API. Absent when no credential is needed.",
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "intervention_id": {
+          "description": "The answered intervention. The worker exchanges it for the user's answer over the internal API (allowed only for this job and attempt).",
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "session_ref": {
+          "description": "The session reference the worker sent in job.intervention_required.",
+          "$ref": "common.schema.json#/$defs/uuid"
+        }
+      }
+    }
+  }
+}

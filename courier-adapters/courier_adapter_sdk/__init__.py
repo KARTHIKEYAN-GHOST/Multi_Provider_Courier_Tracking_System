@@ -14,9 +14,11 @@ from .errors import (
     ParseError,
     ProviderServerError,
     RateLimited,
+    SavedSessionLost,
     SchemaDrift,
     ShipmentNotFound,
 )
+from .interventions import NeedsHuman, captcha_required, otp_required
 from .runner import run
 
 __all__ = [
@@ -28,17 +30,21 @@ __all__ = [
     "CredentialDenied",
     "JobContext",
     "Location",
+    "NeedsHuman",
     "NetworkConnectError",
     "NetworkTimeout",
     "ParseError",
     "ProviderServerError",
     "RateLimited",
     "RawResponse",
+    "SavedSessionLost",
     "SchemaDrift",
     "Secret",
     "ShipmentNotFound",
     "TrackRequest",
     "TrackingEvent",
     "TrackingResult",
+    "captcha_required",
+    "otp_required",
     "run",
 ]

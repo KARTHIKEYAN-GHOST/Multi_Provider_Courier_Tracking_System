@@ -34,6 +34,9 @@ queues:
     bindings:
       - exchange: courier.jobs
         routing_key: job.track.v1.dummy
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.dummy
 
   - name: adapter.dhl.jobs
     durable: true
@@ -46,6 +49,9 @@ queues:
     bindings:
       - exchange: courier.jobs
         routing_key: job.track.v1.dhl
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.dhl
 
   - name: adapter.demosite.jobs
     durable: true
@@ -58,6 +64,9 @@ queues:
     bindings:
       - exchange: courier.jobs
         routing_key: job.track.v1.demosite
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.demosite
 
   - name: engine.events
     durable: true
@@ -72,6 +81,8 @@ queues:
         routing_key: job.started.v1
       - exchange: courier.events
         routing_key: job.result.v1
+      - exchange: courier.events
+        routing_key: job.intervention_required.v1
 
   # Dead-lettered job messages. The Engine consumes this queue: each message still
   # names its job and attempt, so the affected attempt can be closed directly.
@@ -127,3 +138,11 @@ routing:
     exchange: courier.events
     routing_key: job.result.v1
     schema: schemas/v1/job.result.schema.json
+  job.intervention_required:
+    exchange: courier.events
+    routing_key: job.intervention_required.v1
+    schema: schemas/v1/job.intervention_required.schema.json
+  job.resume:
+    exchange: courier.jobs
+    routing_key: "job.resume.v1.{adapter_key}"
+    schema: schemas/v1/job.resume.schema.json

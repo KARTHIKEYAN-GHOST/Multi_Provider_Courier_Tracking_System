@@ -117,6 +117,7 @@ async fn try_create(
             number,
             JobTrigger::Initial,
             input.correlation_id,
+            Some(input.user_id),
         )
         .await?;
         // A shipment nobody was subscribed to has stopped being polled; a new subscriber
@@ -189,6 +190,7 @@ pub async fn refresh(
         &owned.tracking_number,
         JobTrigger::Manual,
         correlation_id,
+        Some(user_id),
     )
     .await?
     {
@@ -217,6 +219,7 @@ pub(crate) async fn ensure_job(
     tracking_number: &str,
     trigger: JobTrigger,
     correlation_id: Uuid,
+    initiated_by: Option<Uuid>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     // PostgreSQL's clock is the single time source for everything the scheduler, reaper and
     // relay will later compare against now(): the queue-wait deadline, the message's
@@ -237,6 +240,7 @@ pub(crate) async fn ensure_job(
         max_attempts: target.max_attempts,
         queue_deadline_at,
         correlation_id,
+        initiated_by,
     };
     if !tracking::insert_job_if_none_active(conn, &job).await? {
         return Ok(None);
@@ -339,6 +343,8 @@ pub fn job_track_message(
             // The queue-wait deadline; unrelated to timeout_ms.
             expires_at: queue_deadline_at,
             credential_ref: target.credential_id,
+            intervention_id: None,
+            session_ref: None,
         },
     )
 }

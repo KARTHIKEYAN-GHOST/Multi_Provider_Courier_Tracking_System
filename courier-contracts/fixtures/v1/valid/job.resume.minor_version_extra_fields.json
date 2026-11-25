@@ -1,0 +1,25 @@
+{
+  "message_id": "019355a0-aaaa-7000-8000-00000000009f",
+  "type": "job.resume",
+  "schema_version": "1.7",
+  "occurred_at": "2026-11-24T10:00:00.123456Z",
+  "correlation_id": "019355a0-0000-7000-8000-00000000c0de",
+  "causation_id": null,
+  "producer": "engine@0.1.0",
+  "payload": {
+    "job_id": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9a01",
+    "attempt": 1,
+    "adapter_key": "demosite",
+    "provider_code": "demosite",
+    "tracking_number": "DEMO-OTP-1",
+    "params": {},
+    "timeout_ms": 10000,
+    "expires_at": "2026-11-24T10:15:00Z",
+    "intervention_id": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9b01",
+    "session_ref": "019355a0-1c2d-7e3f-8a4b-5c6d7e8f9c01",
+    "added_in_a_later_minor": {
+      "x": 1
+    }
+  },
+  "added_in_a_later_minor": true
+}

@@ -12,6 +12,7 @@ RETRYABLE = {
     errors.NetworkConnectError: ErrorClass.NETWORK_CONNECT,
     errors.ProviderServerError: ErrorClass.HTTP_5XX,
     errors.RateLimited: ErrorClass.RATE_LIMITED,
+    errors.SavedSessionLost: ErrorClass.SESSION_LOST,
 }
 PERMANENT = {
     errors.Blocked: ErrorClass.BLOCKED,

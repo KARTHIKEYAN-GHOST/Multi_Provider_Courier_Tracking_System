@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.courier-tracking.invalid/v1/job.intervention_required.schema.json",
+  "title": "job.intervention_required (v1) \u2014 adapter worker to Engine",
+  "description": "One physical execution stopped because the provider asks for something only a human can supply (a one-time code, a CAPTCHA). The worker has saved its session and acknowledged the job message; nothing waits. The answer never travels in a message: the Engine sends job.resume and the worker fetches the answer over the internal API.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "job.intervention_required"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "job_id",
+        "attempt",
+        "execution_id",
+        "delivery_count",
+        "worker_id",
+        "adapter_key",
+        "adapter_version",
+        "started_at",
+        "finished_at",
+        "kind",
+        "prompt",
+        "session_ref"
+      ],
+      "properties": {
+        "job_id": {
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "attempt": {
+          "$ref": "common.schema.json#/$defs/attempt"
+        },
+        "execution_id": {
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "delivery_count": {
+          "$ref": "common.schema.json#/$defs/deliveryCount"
+        },
+        "worker_id": {
+          "$ref": "common.schema.json#/$defs/workerId"
+        },
+        "adapter_key": {
+          "$ref": "common.schema.json#/$defs/key"
+        },
+        "adapter_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "started_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "finished_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "kind": {
+          "description": "What is needed.",
+          "enum": [
+            "otp",
+            "captcha"
+          ]
+        },
+        "prompt": {
+          "description": "Text shown to the user. Written by the adapter, not copied from the provider's page.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "session_ref": {
+          "description": "Opaque reference to the session the worker saved (encrypted, in the adapters' session store). Echoed back in job.resume. Not a secret on its own.",
+          "$ref": "common.schema.json#/$defs/uuid"
+        },
+        "expires_in_s": {
+          "description": "How long the provider will accept an answer. The Engine never waits longer than this, nor longer than its own limit.",
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        },
+        "response_format": {
+          "description": "What a valid answer looks like, so the Engine can refuse an obviously wrong one without bothering the provider.",
+          "type": "object",
+          "required": [
+            "min_length",
+            "max_length",
+            "charset"
+          ],
+          "properties": {
+            "min_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "max_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "charset": {
+              "enum": [
+                "digits",
+                "alphanumeric",
+                "any"
+              ]
+            }
+          }
+        },
+        "image": {
+          "description": "A CAPTCHA picture to show to the user. Provider content: displayed as an image only.",
+          "type": "object",
+          "required": [
+            "content_type",
+            "data"
+          ],
+          "properties": {
+            "content_type": {
+              "enum": [
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp"
+              ]
+            },
+            "data": {
+              "description": "Base64 (standard alphabet).",
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 140000,
+              "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

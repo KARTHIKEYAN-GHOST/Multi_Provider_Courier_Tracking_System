@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate Compose file
         run: make compose-config
-      - name: Start PostgreSQL and RabbitMQ
+      - name: Start PostgreSQL, RabbitMQ and Redis
         run: make up-deps
       - name: Verify databases, vhost, users and permissions
         run: make verify-deps
@@ -51,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: courier-engine
-      - name: Start PostgreSQL and RabbitMQ
+      - name: Start PostgreSQL, RabbitMQ and Redis
         run: make up-deps
       - name: Migrations apply, and are a no-op the second time
         run: make migrate && make migrate
@@ -67,13 +67,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Start RabbitMQ
+      - name: Start RabbitMQ and Redis
         run: make up-deps
       - name: Format, lint, type-check, test
         run: make setup test-adapters
       - name: Stop
         if: always()
         run: make destroy
+
+  human-interface:
+    name: Human interface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Format, lint, type-check, test
+        run: make setup test-human-interface
 
   e2e:
     name: End-to-end
@@ -85,7 +94,7 @@ jobs:
         with:
           workspaces: courier-engine
       - uses: astral-sh/setup-uv@v5
-      - name: Start PostgreSQL and RabbitMQ
+      - name: Start PostgreSQL, RabbitMQ and Redis
         run: make up-deps
       - name: Engine and worker processes, end to end
         run: make setup test-e2e

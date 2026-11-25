@@ -46,8 +46,8 @@ def M(name, need, how):  # one method
 # ---------------------------------------------------------------- cover
 S += [Spacer(1, 60 * mm), Paragraph("Courier Tracking System", title), Spacer(1, 6),
       Paragraph("Project guide: what has been built, how it works, and why", sub), Spacer(1, 14),
-      Paragraph("Covers Phases 1 to 7: Rust Engine, PostgreSQL, RabbitMQ, Python Adapter SDK,<br/>dummy, DHL and demo-site adapters, credentials, polling, retention, tests and containers", sub),
-      Spacer(1, 30 * mm), Paragraph("State of the repository after Phase 7, 25 November 2026", sub)]
+      Paragraph("Covers Phases 1 to 8: Rust Engine, PostgreSQL, RabbitMQ, Redis, Python Adapter SDK,<br/>dummy, DHL and demo-site adapters, credentials, polling, retention,<br/>the OTP / CAPTCHA workflow, the human interface, tests and containers", sub),
+      Spacer(1, 30 * mm), Paragraph("State of the repository after Phase 8, 25 November 2026", sub)]
 
 # ---------------------------------------------------------------- 1
 H1("1. What this project is")
@@ -72,7 +72,7 @@ T(["Phase", "Delivered", "Commit"], [
   ["4", "Python Adapter SDK (worker runtime) and the dummy adapter", "689606b"],
   ["5", "End-to-end test suite, Dockerfiles, full Compose stack, contracts documentation", "cd28ea1"]], [14, 128, 24])
 H2("What is deliberately not built yet")
-B("Redis, sessions, OTP / CAPTCHA workflow and the human interface (Phase 8)",
+B("Notifications to users, pinned (browser) sessions",
   "AI diagnosis and sandboxed AI repair (Phases 9 and 10)",
   "Metrics, circuit breaker, production deployment (Phases 11 and 12)")
 
@@ -105,6 +105,7 @@ T(["Part", "Technology"], [
   ["Engine", "Rust 2024 edition, Tokio, Axum 0.8 (HTTP), SQLx 0.9 (PostgreSQL), Lapin 4 (RabbitMQ), tracing (JSON logs)"],
   ["Adapters", "Python 3.13 managed by uv (the system Python is never touched), aio-pika, Pydantic, structlog"],
   ["Database", "PostgreSQL 17"], ["Broker", "RabbitMQ 4 with quorum queues"],
+  ["Session store", "Redis 7, used only by adapter workers (Phase 8)"],
   ["Local infrastructure", "Docker Compose only (no Kubernetes)"],
   ["Tests", "cargo test with a database per test, pytest, a process-level end-to-end suite"]], [40, 126])
 H2("Repository layout")
@@ -112,6 +113,7 @@ T(["Path", "Contents"], [
   ["courier-contracts/", "JSON Schemas, example messages (fixtures), RabbitMQ topology. Shared by Rust and Python; the source of truth for the message format."],
   ["courier-engine/", "The Rust Engine: src/api (HTTP), src/db (queries), src/services (business logic), src/messaging (RabbitMQ), migrations/, tests/"],
   ["courier-adapters/", "courier_adapter_sdk/ (worker runtime and contracts), adapters/dummy/, tests/"],
+  ["courier-human-interface/", "Small FastAPI website where users answer one-time-code and CAPTCHA questions (Phase 8)"],
   ["tests-e2e/", "End-to-end tests that run the real Engine and worker"],
   ["infrastructure/", "docker-compose.yml, PostgreSQL and RabbitMQ setup scripts, smoke.sh"],
   ["docs/", "architecture.md (whole system), milestone-1.md (detailed plan + notes), contracts.md (messages)"],
@@ -483,16 +485,84 @@ M("retention::archive_due / purge_due / clean_messages / run_maintenance (servic
   "Each step selects a bounded batch of due rows, skipping rows another instance holds, and repeats until nothing is left. A shipment with a running lookup is never archived.")
 
 # ---------------------------------------------------------------- 13
-H1("13. Current state, open points and what comes next")
+H1("13. Phase 8: one-time codes, CAPTCHAs and the human interface")
+P("Some courier websites show the tracking page only after a step that needs a person: a code texted to the consignee, or a CAPTCHA. "
+  "Phase 8 lets a lookup stop at that step, ask the right user and continue with the answer. Full details are in docs/phase-8.md.")
+H2("The workflow in seven steps")
+B("The adapter meets the step and raises otp_required(...) or captcha_required(...), handing over its <b>session</b>: the plain data it needs to continue (a transaction ID, cookies).",
+  "The worker encrypts the session, stores it in <b>Redis</b> with an expiry, sends job.intervention_required to the Engine and acknowledges the job. It does not wait; it takes the next job.",
+  "The Engine sets the job to WAITING_FOR_OTP or WAITING_FOR_CAPTCHA and creates a human_interventions row assigned to one user: the one who started the lookup.",
+  "The user sees the question (prompt, and the picture for a CAPTCHA) through GET /v1/interventions or the human interface, and posts the answer.",
+  "The Engine checks the answer's form, stores it encrypted, puts the job back to QUEUED in the <b>same attempt</b> and sends job.resume. That message holds only two IDs, never the answer.",
+  "Any worker of the adapter loads the session from Redis, fetches the answer from the Engine's internal API (worker token, audited) and calls adapter.resume(session, answer).",
+  "The result closes the attempt as usual. The answer, the picture and the session are deleted.")
+H2("How it can end")
+T(["Situation", "Result"], [
+  ["Right answer", "Job COMPLETED on the same attempt; two executions: suspended, then accepted."],
+  ["The provider refuses the answer", "The old challenge becomes rejected; a new one is put to the user."],
+  ["More than max_challenges (3) in one job", "Job FAILED with CHALLENGE_LIMIT_EXCEEDED, no retry."],
+  ["Nobody answers in time (default 10 minutes)", "Job EXPIRED with INTERVENTION_EXPIRED. A poll or manual refresh starts over."],
+  ["The session is gone (Redis restarted, expired)", "The worker reports SESSION_LOST; a new attempt runs and asks again."],
+  ["Answer of the wrong length or characters", "Refused at once (422); the challenge stays open. Five such answers close it."]], [62, 104])
+H2("Why it is safe")
+B("The answer is never in a RabbitMQ message and never in a log. It is stored encrypted with the master key and deleted when the challenge closes.",
+  "The session never reaches the Engine. In Redis it is ciphertext (AES-256-GCM, key WORKER_SESSION_KEY), bound to its reference, and it expires.",
+  "A challenge is visible to one user only; everybody else gets 404. Only a worker of the job's adapter can fetch the answer, and only while that attempt runs.",
+  "CAPTCHAs are never solved by software. The picture is passed to the user unchanged; only PNG, JPEG, GIF and WebP are accepted (no SVG, which can contain scripts).",
+  "The prompt is written by the adapter. Text from the courier's page is untrusted and is never shown or followed.")
+H2("The human interface")
+P("A small FastAPI website (courier-human-interface/, http://localhost:8088). The user signs in with their API key, sees what is waiting, "
+  "and answers. It is only a client of the Engine's public API: it has no database, RabbitMQ or Redis access and no secrets, so it can "
+  "never show more than the signed-in user's key allows. The browser gets a random cookie, not the key; every form carries an "
+  "anti-forgery token; the pages allow no scripts at all.")
+H2("Trying it with the demo site")
+B("Put CREDENTIAL_MASTER_KEY (make master-key), WORKER_SESSION_KEY (make session-key) and DEMOSITE_WORKER_TOKEN (admin create-worker-token --adapter demosite) into .env, then make up.",
+  "Track DEMO-OTP-1 or DEMO-CAPTCHA-1 with provider demosite.",
+  "Open http://localhost:8088 and sign in. The code for the OTP is shown by the site's pretend phone: http://localhost:8090/inbox?number=DEMO-OTP-1. The CAPTCHA is read from the picture.",
+  "After the answer the request completes with status IN_TRANSIT.")
+H2("Important functions")
+M("interventions::on_intervention_required (Engine, services/interventions.rs)",
+  "The Engine must turn a worker's question into a waiting job and a task for exactly one user, even if the message arrives twice or late.",
+  "Locks the job's attempt, records the execution as suspended, marks an earlier answered challenge as rejected, enforces max_challenges, sets WAITING_FOR_* with a deadline and inserts the human_interventions row. A message for a closed attempt changes nothing.")
+M("interventions::submit",
+  "A user's answer must be accepted once, only from the assigned user, only while the challenge is open, and must lead to exactly one resume.",
+  "In one transaction: locks shipment then job, checks owner, state, expiry and the answer's form, encrypts the answer, sets the job to QUEUED with a new queue deadline and writes the job.resume outbox row.")
+M("interventions::resolve_response",
+  "The worker needs the answer, but nobody else may get it.",
+  "Authenticates the worker token, checks that the challenge belongs to that adapter's job and current running attempt, decrypts and returns the answer, and writes an audit row. Repeatable, so a redelivered resume still works.")
+M("interventions::expire_due",
+  "A job must not wait for ever for a person.",
+  "Called by the reaper: jobs whose intervention deadline passed become EXPIRED (INTERVENTION_EXPIRED); challenges of attempts that ended another way are closed and wiped.")
+M("otp_required / captcha_required and Adapter.resume (SDK, interventions.py, base.py)",
+  "Adapter authors need one simple way to say that a person is needed and to continue afterwards.",
+  "Both build a NeedsHuman signal with kind, prompt, answer format, optional picture and the session. resume(request, ctx, session, response) continues, possibly in another process, and may raise a new challenge.")
+M("Worker._pause / _call_adapter / _publish_intervention (SDK, worker.py)",
+  "The worker must park a lookup without holding a slot, and continue it without ever exposing the answer.",
+  "_pause stores the session under a new reference before anything is reported. _call_adapter, for job.resume, loads the session (missing means SESSION_LOST), fetches the answer and calls resume. The session is deleted only after the result is confirmed and acknowledged, so a redelivery can run again.")
+M("SessionCipher and RedisSessionStore (SDK, sessions.py)",
+  "Sessions can contain cookies and must survive a worker restart without being readable by anyone who reads Redis.",
+  "seal() encrypts with AES-256-GCM using the session reference as authenticated data, so a value copied under another reference does not open. The store saves it with an expiry; an unreadable or missing value is treated as lost.")
+M("create_app (human interface, app.py) with image_src and answer_field",
+  "Users need a page to answer on, and that page must not become a way to see other users' data or to run injected content.",
+  "Every page calls the Engine with the signed-in user's key. image_src embeds a picture only if it is a plain image of an allowed type; answer_field derives input hints from the answer format; the Engine still validates.")
+H2("Deliberate differences from the original design")
+B("job.resume is delivered to the adapter's normal jobs queue instead of a separate resume queue: one consumer, one delivery limit, one dead-letter path.",
+  "Only portable sessions are built. Pinned sessions (a live browser page that only one worker holds) come with the first browser adapter.",
+  "Users answer with their API key (through the API or the human interface) instead of a one-time link, because the system cannot send links to users yet.",
+  "Challenges have their own limit (max_challenges) instead of using up retry attempts.")
+
+# ---------------------------------------------------------------- 14
+H1("14. Current state, open points and what comes next")
 H2("Verified")
-B("500 automated tests pass: 79 contract, 163 Engine, 214 adapter, 44 end-to-end.",
+B("625 automated tests pass: 99 contract, 176 Engine, 266 adapter, 29 human-interface, 55 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
 B("The Docker images and the full container stack (make up, make smoke) had not been built at the time of writing; the Compose file itself validates.",
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
-  "Master-key rotation tooling and an external secrets manager are not built.")
+  "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
+  "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
 B("The dummy courier is created by migration 0008 in every database. Since Phase 6 the ENABLE_DUMMY_PROVIDER setting can switch it off.",
   "Test leftovers in the development PostgreSQL: a few smoke-test users and shipments in database courier, the database courier_e2e (recreated by every end-to-end run) and one old _sqlx_test_... database. None affect the system.",
@@ -502,7 +572,7 @@ H2("Roadmap")
 T(["Phase", "Deliverable"], [
   ["6 (done)", "Encrypted credential storage and an internal resolve API, the DHL adapter, a scraping adapter against a local demo site, per-provider rate limiting"],
   ["7 (done)", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
-  ["8", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
+  ["8 (done)", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
   ["9", "AI service: failure diagnosis and status interpretation (advisory only, no tools, validated output)"],
   ["10", "Sandboxed AI adapter repair that ends in a pull request; a human merges"],
   ["11", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
@@ -517,6 +587,8 @@ T(["Term", "Meaning"], [
   ["Reaper", "Engine task that closes attempts whose deadline has passed."],
   ["Idempotent", "Doing it twice has the same effect as doing it once."],
   ["Correlation ID", "One ID that follows a request through API, messages and logs."],
+  ["Intervention / challenge", "A question only a person can answer: a one-time code or a CAPTCHA."],
+  ["Session", "What an adapter needs to continue a paused lookup; kept encrypted in Redis."],
   ["Quorum queue", "RabbitMQ's replicated, durable queue type with a delivery limit."]], [44, 122])
 
 def footer(canvas, doc):
