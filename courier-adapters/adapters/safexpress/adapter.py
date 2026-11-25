@@ -90,6 +90,7 @@ class SafexpressAdapter(Adapter):
         if response.status_code == 404:
             raise ShipmentNotFound
         check_status(response)
+        ctx.keep_evidence(response)  # the tracking answer; never the token answer
         try:
             data: Any = response.json()
         except ValueError:

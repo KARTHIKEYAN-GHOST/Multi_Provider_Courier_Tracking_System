@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -21,6 +21,7 @@ setup: env ## Install project-local Python environments (uv-managed Python 3.13;
 	cd courier-adapters && uv sync
 	cd tests-e2e && uv sync
 	cd courier-human-interface && uv sync
+	cd courier-ai-repair && uv sync
 
 compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
 	$(COMPOSE) config --quiet && echo "compose file OK"
@@ -54,6 +55,21 @@ test-human-interface: ## Human interface: ruff, mypy, pytest (needs nothing runn
 	cd courier-human-interface && uv run ruff check .
 	cd courier-human-interface && uv run mypy
 	cd courier-human-interface && uv run pytest
+
+repair-token: ## Print a new random token for ENGINE_REPAIR_TOKEN (Engine and AI repair service share it)
+	@openssl rand -hex 32
+
+run-ai-repair: env ## Run the AI repair service (needs a running Engine and the settings in docs/phase-9.md)
+	cd courier-ai-repair && AI_REPAIR_ADAPTERS_VENV=$(CURDIR)/courier-adapters/.venv uv run python -m ai_repair
+
+repairs: env ## List the most recent AI repair tasks and their outcome
+	cd courier-engine && cargo run --quiet -- admin list-repairs
+
+test-ai-repair: ## AI repair service: ruff, mypy, pytest (the sandbox tests need bubblewrap and courier-adapters/.venv)
+	cd courier-ai-repair && uv run ruff format --check .
+	cd courier-ai-repair && uv run ruff check .
+	cd courier-ai-repair && uv run mypy
+	cd courier-ai-repair && uv run pytest
 
 maintenance: env ## Run archiving and retention once, now (the Engine also does this periodically)
 	cd courier-engine && cargo run --quiet -- admin run-maintenance
@@ -113,4 +129,4 @@ test-e2e: env ## End-to-end: real Engine + worker processes on a private databas
 	cd courier-human-interface && uv sync --quiet
 	cd tests-e2e && uv run ruff format --check . && uv run ruff check . && uv run pytest
 
-test: test-contracts test-engine test-adapters test-human-interface test-e2e ## Run every test suite
+test: test-contracts test-engine test-adapters test-human-interface test-ai-repair test-e2e ## Run every test suite

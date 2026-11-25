@@ -114,6 +114,7 @@ T(["Path", "Contents"], [
   ["courier-engine/", "The Rust Engine: src/api (HTTP), src/db (queries), src/services (business logic), src/messaging (RabbitMQ), migrations/, tests/"],
   ["courier-adapters/", "courier_adapter_sdk/ (worker runtime and contracts), adapters/dummy/, tests/"],
   ["courier-human-interface/", "Small FastAPI website where users answer one-time-code and CAPTCHA questions (Phase 8)"],
+  ["courier-ai-repair/", "The AI repair service: asks a model to repair or write an adapter, checks and tests the result, pushes it to GitHub (Phase 9)"],
   ["tests-e2e/", "End-to-end tests that run the real Engine and worker"],
   ["infrastructure/", "docker-compose.yml, PostgreSQL and RabbitMQ setup scripts, smoke.sh"],
   ["docs/", "architecture.md (whole system), milestone-1.md (detailed plan + notes), contracts.md (messages)"],
@@ -586,15 +587,73 @@ M("parse_packages (adapters/delhivery/parser.py)",
   "It picks the shipment with the requested waybill and reports each scan as direction:status, for example UD:In Transit or RT:In Transit.")
 
 # ---------------------------------------------------------------- 15
-H1("15. Current state, open points and what comes next")
+H1("15. Phase 9: the AI repair service")
+P("When an adapter can no longer read its courier's answers, or a courier has no adapter yet, an AI model writes the code. "
+  "A separate program, the repair service, checks that code, tests it in a sandbox and pushes it to the main branch on GitHub; other devices get it with git pull. "
+  "Nobody reviews the code before it reaches main: that was chosen for this phase, and the automatic checks are the only gate. Full details are in docs/phase-9.md.")
+H2("The path of a repair")
+B("The adapter calls ctx.keep_evidence(response) on the courier's answer. If the lookup fails with PARSE_ERROR or SCHEMA_DRIFT, the worker sends that answer along with the failure.",
+  "The Engine stores it. After three such lookups of one adapter version within 24 hours it opens a repair task.",
+  "The repair service claims the task over the Engine's internal API, with its own token. It has no access to the database, RabbitMQ or Redis.",
+  "It makes a fresh clone from GitHub, removes the tracking number, e-mail addresses and phone numbers from the answers, and asks the model (through OpenRouter) for whole files.",
+  "The guard checks the proposal against fixed rules before a file is written.",
+  "The linter, the type checker and the adapter's tests run in a sandbox without network and without secrets. A rejected or failing proposal goes back to the model, three rounds at most.",
+  "Only the files of the task are committed and pushed (never forced). The Engine records the commit, or the reason for the failure.")
+H2("What generated code may not do")
+T(["Rule", "Detail"], [
+  ["Files", "Only the adapter's own folder and its one test file. Not the SDK, another adapter, the Engine, CI or configuration."],
+  ["Imports", "An exact list: os, re, typing, datetime, json, dataclasses, httpx, bs4, the SDK's public modules and the shared helpers."],
+  ["Escape hatches", "No eval, exec, open, getattr, attributes starting with two underscores, file writing or starting programs."],
+  ["Hosts", "Every address in the code must belong to the adapter's existing hosts, or to the hosts the operator named for a new provider. Endpoint addresses stay in the adapters."],
+  ["Environment", "Only variables named after the adapter. A worker token or the session key cannot be read."],
+  ["Shape", "Same key, higher version, keep_evidence still called, no fewer tests, and the recorded answers used as test fixtures."],
+], [30, 136])
+H2("New providers")
+P("An operator runs admin request-adapter with a code, a name, the method (api or scrape), the hosts the adapter may contact, notes and, if available, an example answer. "
+  "The model writes only the adapter and its tests. The queue and dead-letter queue, the database rows with the seven status mappings and the worker service are produced from templates, not by the model. "
+  "The new provider stays unusable until its credential is stored or the site owner's permission is recorded, like every other provider.")
+H2("Important functions")
+M("JobContext.keep_evidence (SDK, context.py) and Worker._execute",
+  "A repair needs the exact answer the adapter failed on; logs and error texts do not contain it.",
+  "keep_evidence remembers the answer (at most 100,000 characters). The worker attaches it to the result only when the failure is PARSE_ERROR or SCHEMA_DRIFT; every other outcome sends nothing extra.")
+M("repairs::record_failure (Engine, services/repairs.rs)",
+  "One odd shipment must not start a repair, and workers that still run the old version must not start a second one.",
+  "It stores the answer once per execution, keeps the ten newest per adapter, and inserts a task only if three different lookups of that version failed within 24 hours and no task is open, published for that version, or failed in the last six hours.")
+M("repairs::claim and repairs::finish (Engine)",
+  "Two repair services, or one that crashed, must not both work on a task or leave it stuck.",
+  "claim marks the oldest waiting task as running under a row lock that skips locked rows, and hands out a task again if its claim is older than two hours. finish accepts an outcome only for a running task.")
+M("require_repair_token (Engine, api/internal.rs)",
+  "The repair service must reach its two routes and nothing else, and a worker token must not open them.",
+  "It compares the presented token with ENGINE_REPAIR_TOKEN in constant time. With no token configured, or one shorter than 32 characters, everybody is refused.")
+M("check_proposal and check_python (repair service, guard.py)",
+  "The model's answer is untrusted; a courier's page it was shown may contain text written to mislead it.",
+  "The files are parsed, not run. Every import, name, attribute and text constant is compared with the rules above; then the proposal as a whole is checked for key, version, evidence call, test count and fixtures.")
+M("Bubblewrap.run (repair service, sandbox.py)",
+  "Rules on code can be circumvented; running generated tests must be harmless even then.",
+  "It starts the command in new namespaces with no network, an empty environment and a file system that holds only system libraries, the Python environment and the clone (read-only while tests run). Without bubblewrap the service refuses to start.")
+M("scaffold (repair service, scaffold.py)",
+  "A provider needs queues, database rows and a worker service; none of that may be left to a model.",
+  "It validates the request again and inserts template blocks into the topology and Compose files and writes the next numbered migration. An existing adapter is never overwritten.")
+M("Workspace.commit and Workspace.push (repair service, workspace.py)",
+  "Only the task's files may be published, and the GitHub token must not leak.",
+  "commit fails if any other file changed. The token reaches Git only through its environment for clone and push; hooks are switched off; the push is never forced, so it fails if main moved.")
+H2("What can still go wrong")
+B("The tests are written by the same model as the code. An adapter can pass them and still read a courier's page wrongly.",
+  "The guard is not a proof: code could assemble an address from pieces at run time. Once on main, an adapter has what a worker has. Setting AI_REPAIR_PUSH_BRANCH to another branch restores a human review.",
+  "The unreadable answers are sent to OpenRouter and committed as test fixtures. Names and street addresses are not recognized by the scrubber.",
+  "Other devices must pull and rebuild: a repaired adapter needs its worker restarted, a new provider also needs the Engine rebuilt (migrations and queues are compiled into it).")
+
+# ---------------------------------------------------------------- 16
+H1("16. Current state, open points and what comes next")
 H2("Verified")
-B("804 automated tests pass: 99 contract, 181 Engine, 438 adapter, 29 human-interface, 57 end-to-end.",
+B("922 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 102 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
 B("The Docker images and the full container stack (make up, make smoke) had not been built at the time of writing; the Compose file itself validates.",
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
+  "The AI repair service has never called OpenRouter or pushed to GitHub: its tests use scripted model answers and a local Git repository.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
@@ -607,8 +666,8 @@ T(["Phase", "Deliverable"], [
   ["6 (done)", "Encrypted credential storage and an internal resolve API, the DHL adapter, a scraping adapter against a local demo site, per-provider rate limiting"],
   ["7 (done)", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
   ["8 (done)", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
-  ["9", "AI service: failure diagnosis and status interpretation (advisory only, no tools, validated output)"],
-  ["10", "Sandboxed AI adapter repair that ends in a pull request; a human merges"],
+  ["9 (done)", "AI repair service: repairs a broken adapter or writes one for a new courier, checks it in a sandbox and pushes it to GitHub"],
+  ["10", "AI failure diagnosis and status interpretation (advisory only); optional human review of repairs"],
   ["11", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
   ["12", "Production images and deployment documentation"]], [16, 150])
 H2("Glossary")

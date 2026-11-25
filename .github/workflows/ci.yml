@@ -84,6 +84,19 @@ jobs:
       - name: Format, lint, type-check, test
         run: make setup test-human-interface
 
+  ai-repair:
+    name: AI repair service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # The end-to-end tests run generated code in a bubblewrap sandbox; where the runner
+      # does not allow one, those tests are skipped and the rest still runs.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Format, lint, type-check, test
+        run: make setup test-ai-repair
+
   e2e:
     name: End-to-end
     runs-on: ubuntu-latest

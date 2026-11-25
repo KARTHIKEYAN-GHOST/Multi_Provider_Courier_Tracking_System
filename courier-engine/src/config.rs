@@ -58,6 +58,10 @@ pub struct Config {
     /// reachable from outside the deployment. Not started when unset.
     #[serde(default)]
     pub engine_internal_addr: Option<String>,
+    /// Token of the AI repair service for its two internal endpoints (at least 32
+    /// characters). A secret. Unset: those endpoints refuse everybody.
+    #[serde(default)]
+    pub engine_repair_token: Option<String>,
     /// Master key for stored credentials: 64 hexadecimal characters. A secret.
     #[serde(default)]
     pub credential_master_key: Option<String>,
@@ -157,6 +161,10 @@ impl std::fmt::Debug for Config {
             .field("engine_topology_prefix", &self.engine_topology_prefix)
             .field("engine_internal_addr", &self.engine_internal_addr)
             .field(
+                "engine_repair_token",
+                &self.engine_repair_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
                 "credential_master_key",
                 &self.credential_master_key.as_ref().map(|_| "[redacted]"),
             )
@@ -204,6 +212,7 @@ impl Config {
             max_dead_letter_retries: default_max_dead_letter_retries(),
             engine_topology_prefix: String::new(),
             engine_internal_addr: None,
+            engine_repair_token: None,
             credential_master_key: None,
             credential_key_version: default_credential_key_version(),
             enable_dummy_provider: default_enable_dummy_provider(),

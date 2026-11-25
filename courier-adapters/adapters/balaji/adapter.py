@@ -64,6 +64,7 @@ class BalajiAdapter(Adapter):
             raise ShipmentNotFound
         check_status(response)
         html = response.text
+        ctx.keep_evidence(response)
         events = history_events(html)
         # The page is kept exactly as received, for debugging a parser that stops working.
         return TrackingResult(RawResponse(content_type="text/html", body=html), events)

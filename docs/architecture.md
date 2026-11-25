@@ -198,6 +198,8 @@ Every message uses one envelope: `message_id`, `type`, `schema_version`, `occurr
 
 **AI diagnosis (Phase 9).** Deterministic classification always runs first; network, rate-limit, auth and not-found classes never reach the AI. Eligible classes (`PARSE_ERROR`, `SCHEMA_DRIFT`, `UNKNOWN`, unmapped status) are sent only when a fingerprint recurs and has no open diagnosis. The AI returns a schema-validated JSON verdict. Status mappings are proposals that need human approval.
 
+> Built differently in Phase 9, on the owner's decision: repair came first, it also writes adapters for new providers, and it pushes to `main` without a pull request. See [phase-9.md](phase-9.md).
+
 **AI repair (Phase 10).** The orchestrator pulls a repair request from the Engine over HTTP, adds the redacted failing fixture as a test, asks the model for a patch, checks it against the allow-list and static rules, runs the tests in the sandbox, and — only if they pass — pushes a branch and opens a pull request. Merge and deployment stay manual.
 
 ## 9. Sessions

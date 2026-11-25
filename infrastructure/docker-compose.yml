@@ -89,9 +89,12 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ENGINE_AMQP_URL: amqp://${RABBITMQ_ENGINE_USER}:${RABBITMQ_ENGINE_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
       ENGINE_HTTP_ADDR: 0.0.0.0:8080
-      # Internal API (credential resolve) for adapter workers. Port 8081 is NOT published to
-      # the host: it is reachable only from other containers of this stack.
+      # Internal API for adapter workers (credential resolve) and the AI repair service.
+      # Every route needs a token. Port 8081 is reachable from the containers of this stack
+      # and from this machine itself (127.0.0.1), never from the network.
       ENGINE_INTERNAL_ADDR: 0.0.0.0:8081
+      # Token of the AI repair service. Empty = its two routes refuse everybody.
+      ENGINE_REPAIR_TOKEN: ${ENGINE_REPAIR_TOKEN:-}
       # Empty = no credential store: providers that need a credential stay unavailable.
       CREDENTIAL_MASTER_KEY: ${CREDENTIAL_MASTER_KEY:-}
       CREDENTIAL_KEY_VERSION: ${CREDENTIAL_KEY_VERSION:-1}
@@ -108,6 +111,8 @@ services:
     environment: *engine-environment
     ports:
       - "127.0.0.1:${ENGINE_HOST_PORT:-8080}:8080"
+      # For the AI repair service, which runs on this machine outside Compose.
+      - "127.0.0.1:${ENGINE_INTERNAL_HOST_PORT:-8081}:8081"
     depends_on:
       engine-migrate:
         condition: service_completed_successfully

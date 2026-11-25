@@ -343,9 +343,18 @@ async fn the_dummy_provider_switch_turns_only_test_providers_on_and_off(pool: Pg
             .collect()
     };
     let before = call(&app, Method::GET, "/v1/providers", Some(&key), None).await;
-    // Real couriers stay listed whatever the switch says.
-    let real = ["abt", "balaji", "delhivery", "dhl", "safexpress", "skyking"];
-    let mut all = [real.as_slice(), &["demosite", "dummy"]].concat();
+    // Real couriers stay listed whatever the switch says. (The list grows with new adapters.)
+    let real: Vec<String> =
+        sqlx::query_scalar("SELECT code FROM providers WHERE NOT is_test ORDER BY code")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(real.contains(&"dhl".to_string()));
+    let mut all = [
+        real.as_slice(),
+        &["demosite".to_string(), "dummy".to_string()],
+    ]
+    .concat();
     all.sort_unstable();
     assert_eq!(codes(&before), all);
 

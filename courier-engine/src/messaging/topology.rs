@@ -135,20 +135,21 @@ mod tests {
         let events = topology.queues_for(EVENT_CONSUMER);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "engine.events");
-        let dead = topology.queues_for(DEAD_LETTER_CONSUMER);
-        assert_eq!(
-            dead.iter().map(|q| q.name.as_str()).collect::<Vec<_>>(),
-            [
-                "adapter.dummy.jobs.dlq",
-                "adapter.dhl.jobs.dlq",
-                "adapter.demosite.jobs.dlq",
-                "adapter.delhivery.jobs.dlq",
-                "adapter.safexpress.jobs.dlq",
-                "adapter.skyking.jobs.dlq",
-                "adapter.abt.jobs.dlq",
-                "adapter.balaji.jobs.dlq"
-            ]
-        );
+        // Every adapter's job queue has a dead-letter queue the Engine consumes, and
+        // nothing else is consumed as one. (The list grows when adapters are added.)
+        let dead: Vec<&str> = topology
+            .queues_for(DEAD_LETTER_CONSUMER)
+            .iter()
+            .map(|q| q.name.as_str())
+            .collect();
+        let expected: Vec<String> = topology
+            .queues
+            .iter()
+            .filter(|q| q.consumer == "adapter-worker")
+            .map(|q| format!("{}.dlq", q.name))
+            .collect();
+        assert_eq!(dead, expected);
+        assert!(dead.contains(&"adapter.dummy.jobs.dlq"));
         // The parked queue has no Engine consumer.
         assert!(
             topology

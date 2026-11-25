@@ -314,6 +314,10 @@ async fn on_result(
     if closed.is_some() && p.outcome != JobOutcome::Failure {
         store_answer(conn, shipment_id, provider_id, p).await?;
     }
+    // An answer the adapter could not read is kept as material for repairing the adapter.
+    if closed.is_some() {
+        super::repairs::record_failure(conn, provider_id, p).await?;
+    }
     Ok(Handled::Processed)
 }
 

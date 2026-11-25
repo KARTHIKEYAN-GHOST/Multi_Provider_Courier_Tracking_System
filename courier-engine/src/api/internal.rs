@@ -22,12 +22,21 @@ use crate::{
     services::{
         credentials::{self, ResolveRequest, Resolved},
         interventions::{self, ResponseRequest, ResponseResolved},
+        repairs::{self, Finish},
         worker_tokens::{self, WorkerIdentity},
     },
     state::AppState,
 };
 
 pub fn router(state: AppState) -> Router {
+    // The AI repair service has its own token and reaches these two routes only.
+    let repair = Router::new()
+        .route("/internal/v1/repairs/claim", post(claim_repair))
+        .route("/internal/v1/repairs/{id}/result", post(finish_repair))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_repair_token,
+        ));
     Router::new()
         .route("/internal/v1/credentials/resolve", post(resolve))
         .route(
@@ -38,6 +47,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             require_worker_token,
         ))
+        .merge(repair)
         .fallback(|| async { ApiError::NotFound("resource") })
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -148,5 +158,66 @@ async fn resolve_intervention(
             code: "resolve_denied",
             message: "the answer cannot be resolved for this job",
         }),
+    }
+}
+
+/// The repair service's token is a configured secret, compared without leaking by timing
+/// where the two differ. With no token configured, nobody passes.
+async fn require_repair_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    use sha2::{Digest, Sha256};
+    use subtle::ConstantTimeEq;
+
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .ok_or(ApiError::Unauthorized)?;
+    let expected = state
+        .config
+        .engine_repair_token
+        .as_deref()
+        .filter(|token| token.len() >= 32)
+        .ok_or(ApiError::Unauthorized)?;
+    let same = Sha256::digest(presented.as_bytes())
+        .as_slice()
+        .ct_eq(Sha256::digest(expected.as_bytes()).as_slice());
+    if !bool::from(same) {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(next.run(request).await)
+}
+
+/// POST /internal/v1/repairs/claim
+///
+/// The next task with the answers the adapter could not read, or 204 when there is none.
+async fn claim_repair(State(state): State<AppState>) -> Result<Response, ApiError> {
+    Ok(match repairs::claim(&state.pool).await? {
+        Some(task) => {
+            let mut response = Json(task).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
+/// POST /internal/v1/repairs/{id}/result
+async fn finish_repair(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    ApiJson(outcome): ApiJson<Finish>,
+) -> Result<Response, ApiError> {
+    if repairs::finish(&state.pool, id, &outcome).await? {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(ApiError::NotFound("repair task"))
     }
 }

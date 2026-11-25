@@ -56,6 +56,7 @@ class DemoSiteAdapter(Adapter):
 
     async def track(self, request: TrackRequest, ctx: JobContext) -> TrackingResult:
         response = await self.fetch(request.tracking_number, ctx)
+        ctx.keep_evidence(response)
         return await self._answer(response.text, ctx)
 
     async def resume(
@@ -70,6 +71,7 @@ class DemoSiteAdapter(Adapter):
             # The site no longer knows the verification step (it expired there).
             raise SavedSessionLost("the site's verification step has expired")
         check_status(page)
+        ctx.keep_evidence(page)
         return await self._answer(page.text, ctx)
 
     async def _answer(self, html: str, ctx: JobContext) -> TrackingResult:

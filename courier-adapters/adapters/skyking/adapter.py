@@ -71,6 +71,7 @@ class SkykingAdapter(Adapter):
             headers={"KeyValue": page_key, "Accept": "application/json"},
         )
         check_status(response)
+        ctx.keep_evidence(response)  # the history; never the access-key answer
         try:
             data: Any = response.json()
         except ValueError:

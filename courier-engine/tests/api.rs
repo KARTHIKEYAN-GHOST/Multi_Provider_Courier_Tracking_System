@@ -19,6 +19,10 @@ const MIGRATOR: &sqlx::migrate::Migrator = &db::MIGRATOR;
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn migrations_are_a_no_op_when_applied_again(pool: PgPool) {
     // #[sqlx::test] has already applied every migration to this database.
+    let seeded: i64 = sqlx::query_scalar("SELECT count(*) FROM providers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     db::MIGRATOR.run(&pool).await.unwrap();
     db::MIGRATOR.run(&pool).await.unwrap();
 
@@ -32,10 +36,8 @@ async fn migrations_are_a_no_op_when_applied_again(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(
-        providers, 8,
-        "the seeds (dummy, dhl, demosite and five Indian couriers) must not be applied twice"
-    );
+    assert!(seeded >= 8, "dummy, dhl, demosite and five Indian couriers");
+    assert_eq!(providers, seeded, "the seeds must not be applied twice");
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

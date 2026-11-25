@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
@@ -11,8 +12,12 @@ from typing import Any
 import httpx
 import structlog
 
+from .contracts import RawResponse
 from .credentials import CredentialDenied, CredentialResolver, Secret
 from .http import new_client
+
+#: A provider answer kept as evidence is cut to this many characters.
+MAX_EVIDENCE_CHARS = 100_000
 
 
 @dataclass
@@ -35,6 +40,26 @@ class JobContext:
     credential_ref: str | None = None
     _resolver: CredentialResolver | None = field(default=None, repr=False)
     _stack: AsyncExitStack = field(default_factory=AsyncExitStack, repr=False)
+    #: The provider answer the adapter is about to read (see ``keep_evidence``).
+    evidence: RawResponse | None = field(default=None, repr=False)
+
+    def keep_evidence(self, response: httpx.Response) -> None:
+        """Remember the provider's answer before trying to read it.
+
+        If reading it then fails (``ParseError``, ``SchemaDrift``), the worker sends this
+        answer to the Engine with the failure, so that the adapter can be repaired against
+        what the provider really sent. Call it for the tracking answer only, never for an
+        answer that carries a secret (a login or token answer).
+        """
+        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        text = response.text[:MAX_EVIDENCE_CHARS]
+        body: Any = text
+        if "json" in content_type and len(response.text) <= MAX_EVIDENCE_CHARS:
+            try:
+                body = json.loads(text)
+            except ValueError:
+                body = text
+        self.evidence = RawResponse(content_type=content_type[:200] or "text/plain", body=body)
 
     async def credentials(self) -> Secret:
         """The provider credential for this job, fetched from the Engine.

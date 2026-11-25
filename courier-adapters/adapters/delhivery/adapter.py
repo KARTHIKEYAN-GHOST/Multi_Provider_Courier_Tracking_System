@@ -57,6 +57,7 @@ class DelhiveryAdapter(Adapter):
         if response.status_code == 404:
             raise ShipmentNotFound
         check_status(response)
+        ctx.keep_evidence(response)
         try:
             data: Any = response.json()
         except ValueError:

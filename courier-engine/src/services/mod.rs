@@ -12,6 +12,7 @@ pub mod interventions;
 pub mod mappings;
 pub mod polling;
 pub mod reaper;
+pub mod repairs;
 pub mod retention;
 pub mod retry_scheduler;
 pub mod worker_tokens;

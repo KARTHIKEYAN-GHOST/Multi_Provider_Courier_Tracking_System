@@ -9,6 +9,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/phase-7.md](docs/phase-7.md) — automatic re-polling, status-mapping management, archiving and retention
 - [docs/phase-8.md](docs/phase-8.md) — one-time codes and CAPTCHAs: sessions in Redis, the intervention workflow, the human interface
 - [docs/indian-couriers.md](docs/indian-couriers.md) — Delhivery, Safexpress, SkyKing, ABT and Balaji Roadlines: how each is tracked, what each needs before use
+- [docs/phase-9.md](docs/phase-9.md) — AI repair service: repairs a broken adapter or writes one for a new courier, checks it, and pushes it to GitHub
 
 ## Status
 
@@ -32,6 +33,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | `courier-contracts/` | JSON Schemas, fixtures and RabbitMQ topology shared by Rust and Python |
 | `courier-adapters/` | Python Adapter SDK (worker runtime, message contracts, credentials, HTTP), the dummy, DHL, demo-site and five Indian courier adapters, and the demo courier website |
 | `courier-human-interface/` | Small FastAPI site where a user answers one-time-code and CAPTCHA challenges (thin client of the Engine API) |
+| `courier-ai-repair/` | AI repair service: has a model repair or write an adapter, checks and sandboxes the result, pushes it to GitHub (Phase 9) |
 | `infrastructure/` | Docker Compose, PostgreSQL, RabbitMQ and Redis configuration |
 | `tests-e2e/` | End-to-end tests: real Engine and worker processes on a private database and queues |
 | `docs/` | Architecture, contracts and plans |

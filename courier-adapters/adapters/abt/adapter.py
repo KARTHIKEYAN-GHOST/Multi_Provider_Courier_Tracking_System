@@ -66,6 +66,7 @@ class AbtAdapter(Adapter):
         html = response.text
         if _MAINTENANCE.search(html):
             raise ProviderServerError("ABT's online tracking is switched off for maintenance")
+        ctx.keep_evidence(response)
         events = history_events(html)
         # The page is kept exactly as received, for debugging a parser that stops working.
         return TrackingResult(RawResponse(content_type="text/html", body=html), events)

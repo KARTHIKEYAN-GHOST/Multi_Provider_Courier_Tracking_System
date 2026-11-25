@@ -95,6 +95,37 @@ enum AdminCommand {
         #[arg(long)]
         prefix: String,
     },
+    /// Ask the AI repair service to write an adapter for a provider that has none yet
+    RequestAdapter {
+        /// The new provider's code: lowercase letters and digits (also the adapter's name)
+        #[arg(long)]
+        code: String,
+        /// The courier's name as shown to users
+        #[arg(long)]
+        name: String,
+        /// How it is tracked: api or scrape
+        #[arg(long)]
+        method: String,
+        /// Host names the adapter may contact, separated by commas (e.g. api.example.com)
+        #[arg(long, value_delimiter = ',')]
+        hosts: Vec<String>,
+        /// The provider's API needs a credential (stored later with set-credential)
+        #[arg(long)]
+        needs_credential: bool,
+        /// How the provider is tracked: address, parameters, what the answer looks like
+        #[arg(long)]
+        notes: String,
+        /// A file with an example answer of the provider (JSON or HTML), if you have one
+        #[arg(long)]
+        sample_file: Option<std::path::PathBuf>,
+    },
+    /// Ask for a repair of an adapter now, from its stored unreadable answers
+    RequestRepair {
+        #[arg(long)]
+        adapter: String,
+    },
+    /// List the most recent AI repair tasks
+    ListRepairs,
     /// Record whether the owner of a provider's website has permitted scraping it
     SetScrapingAuthorized {
         #[arg(long)]
@@ -416,6 +447,57 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
                 bail!("no active worker token with this prefix");
             }
             println!("revoked");
+        }
+        AdminCommand::RequestAdapter {
+            code,
+            name,
+            method,
+            hosts,
+            needs_credential,
+            notes,
+            sample_file,
+        } => {
+            let sample = match sample_file {
+                Some(path) => Some(std::fs::read_to_string(&path).map_err(|e| {
+                    anyhow::anyhow!("cannot read the sample file {}: {e}", path.display())
+                })?),
+                None => None,
+            };
+            let spec = crate::services::repairs::NewProvider {
+                code,
+                name,
+                method,
+                hosts,
+                needs_credential,
+                notes,
+                sample,
+            };
+            let id = crate::services::repairs::request_new_provider(pool, &spec)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("repair task {id} created for new provider {}", spec.code);
+        }
+        AdminCommand::RequestRepair { adapter } => {
+            let id = crate::services::repairs::request_repair(pool, &adapter)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("repair task {id} created for adapter {adapter}");
+        }
+        AdminCommand::ListRepairs => {
+            for task in crate::services::repairs::list(pool, 50).await? {
+                println!(
+                    "{}  {:<12} {:<14} {:<9} attempts={} {}",
+                    task.created_at.format("%Y-%m-%d %H:%M"),
+                    task.kind,
+                    task.adapter_key,
+                    task.status,
+                    task.attempts,
+                    task.commit_sha
+                        .or(task.failure_reason)
+                        .or(task.summary)
+                        .unwrap_or_default()
+                );
+            }
         }
         AdminCommand::SetScrapingAuthorized {
             provider,

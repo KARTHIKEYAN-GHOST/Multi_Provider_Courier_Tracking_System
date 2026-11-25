@@ -63,6 +63,7 @@ from .contracts import (
     JobTrackEnvelope,
     Metrics,
     Outcome,
+    RawResponse,
     new_id,
     utc_now,
 )
@@ -448,7 +449,10 @@ class Worker:
             info = describe(error)
             if info.error_class in (ErrorClass.INTERNAL, ErrorClass.UNKNOWN):
                 execution.log.exception("adapter_raised_unexpected_error")
-            return False, _Outcome(Outcome.FAILURE, error=info)
+            # An answer the adapter could not read travels with the failure: it is what a
+            # repair of the adapter is written against. Other failures carry nothing.
+            unreadable = info.error_class in (ErrorClass.PARSE_ERROR, ErrorClass.SCHEMA_DRIFT)
+            return False, _Outcome(Outcome.FAILURE, error=info, evidence=ctx.evidence if unreadable else None)
 
     async def _call_adapter(self, job: JobTrack, request: TrackRequest, ctx: JobContext) -> TrackingResult:
         """A new lookup calls ``track``. A resumed one loads the saved session, fetches the
@@ -591,7 +595,7 @@ class Worker:
             **self._identity(execution, started_at),
             finished_at=utc_now(),
             outcome=outcome.outcome,
-            raw_response=outcome.answer.raw_response if outcome.answer else None,
+            raw_response=outcome.answer.raw_response if outcome.answer else outcome.evidence,
             events=list(outcome.answer.events) if outcome.answer else None,
             error=outcome.error,
             metrics=Metrics(duration_ms=duration_ms),
@@ -641,6 +645,8 @@ class _Outcome:
     error: ErrorInfo | None = None
     challenge: Challenge | None = None
     session_ref: str | None = None
+    #: The provider answer that could not be read, for a failure of that kind.
+    evidence: RawResponse | None = None
 
 
 # ---------------------------------------------------------------------- RabbitMQ transport
