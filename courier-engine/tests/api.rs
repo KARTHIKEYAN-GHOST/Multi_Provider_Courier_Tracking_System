@@ -33,8 +33,8 @@ async fn migrations_are_a_no_op_when_applied_again(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(
-        providers, 3,
-        "the seeds (dummy, dhl, demosite) must not be applied twice"
+        providers, 8,
+        "the seeds (dummy, dhl, demosite and five Indian couriers) must not be applied twice"
     );
 }
 

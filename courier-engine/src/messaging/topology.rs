@@ -141,7 +141,12 @@ mod tests {
             [
                 "adapter.dummy.jobs.dlq",
                 "adapter.dhl.jobs.dlq",
-                "adapter.demosite.jobs.dlq"
+                "adapter.demosite.jobs.dlq",
+                "adapter.delhivery.jobs.dlq",
+                "adapter.safexpress.jobs.dlq",
+                "adapter.skyking.jobs.dlq",
+                "adapter.abt.jobs.dlq",
+                "adapter.balaji.jobs.dlq"
             ]
         );
         // The parked queue has no Engine consumer.

@@ -343,7 +343,11 @@ async fn the_dummy_provider_switch_turns_only_test_providers_on_and_off(pool: Pg
             .collect()
     };
     let before = call(&app, Method::GET, "/v1/providers", Some(&key), None).await;
-    assert_eq!(codes(&before), ["demosite", "dhl", "dummy"]);
+    // Real couriers stay listed whatever the switch says.
+    let real = ["abt", "balaji", "delhivery", "dhl", "safexpress", "skyking"];
+    let mut all = [real.as_slice(), &["demosite", "dummy"]].concat();
+    all.sort_unstable();
+    assert_eq!(codes(&before), all);
 
     assert_eq!(
         db::providers::set_test_providers_enabled(&pool, false)
@@ -352,7 +356,7 @@ async fn the_dummy_provider_switch_turns_only_test_providers_on_and_off(pool: Pg
         2
     );
     let off = call(&app, Method::GET, "/v1/providers", Some(&key), None).await;
-    assert_eq!(codes(&off), ["dhl"]);
+    assert_eq!(codes(&off), real);
     let body = json!({ "provider_code": "dummy", "tracking_number": "DUMMY-OK-1" });
     let refused = call(
         &app,

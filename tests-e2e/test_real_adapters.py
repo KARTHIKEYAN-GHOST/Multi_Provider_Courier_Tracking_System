@@ -252,20 +252,24 @@ def test_calls_to_a_rate_limited_provider_are_spaced_out(stack: Stack, user: Use
 # ----------------------------------------------------------------------------- dummy-provider switch
 
 
+#: Real couriers stay listed whatever the switch says; whether one can be used is a separate matter.
+REAL = ["abt", "balaji", "delhivery", "dhl", "safexpress", "skyking"]
+
+
 def test_with_the_switch_off_the_test_providers_are_not_offered(stack: Stack, user: User) -> None:
     def offered() -> list[str]:
         return sorted(p["code"] for p in user.http.get("/providers").json()["items"])
 
-    assert offered() == ["demosite", "dhl", "dummy"]
+    assert offered() == sorted([*REAL, "demosite", "dummy"])
     stack.engine.stop()
     stack.engine.start(ENABLE_DUMMY_PROVIDER="false")
     wait_until(stack._ready, 30, "the Engine to become ready")
     try:
-        assert offered() == ["dhl"]
+        assert offered() == REAL
         assert user.track(number("OK")).status_code == 404
     finally:
         stack.engine.stop()
         stack.engine.start(ENABLE_DUMMY_PROVIDER="true")
         wait_until(stack._ready, 30, "the Engine to become ready")
-    assert offered() == ["demosite", "dhl", "dummy"]
+    assert offered() == sorted([*REAL, "demosite", "dummy"])
     assert user.wait_for(user.submit(number("OK")))["latest_job"]["status"] == "COMPLETED"

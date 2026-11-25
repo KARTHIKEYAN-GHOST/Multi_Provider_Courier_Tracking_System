@@ -557,9 +557,38 @@ B("job.resume is delivered to the adapter's normal jobs queue instead of a separ
   "Challenges have their own limit (max_challenges) instead of using up retry attempts.")
 
 # ---------------------------------------------------------------- 14
-H1("14. Current state, open points and what comes next")
+H1("14. Five Indian couriers")
+P("Between Phase 8 and Phase 9 five adapters were added. Each was written from what the courier publishes or from what its public tracking page does. "
+  "No consignment was looked up on any courier's system, so none has been tried against the real service. Full details are in docs/indian-couriers.md.")
+T(["Courier", "How it is tracked", "Needs before use"], [
+  ["Delhivery", "Official tracking API with an account token", "API token (stored as a credential)"],
+  ["Safexpress", "Customer API: OAuth2 client credentials and an API key. The public website demands an OTP and a CAPTCHA.", "Client id, client secret, API key; endpoint address to be confirmed"],
+  ["SkyKing", "The JSON service behind its tracking page (two calls)", "SkyKing's permission"],
+  ["ABT Parcel Service", "The tracking form on its website. Tracking was switched off for maintenance in November 2026.", "ABT's permission; a saved result page"],
+  ["Balaji Roadlines", "The LR tracking page of Sri Balaji Transport Lines", "The company's permission; a saved result page"],
+], [32, 76, 56])
+H2("Safe by default")
+B("All five are in the database, but the Engine refuses a job for any of them until its requirement is met: a stored credential for the two APIs, a recorded permission for the three websites.",
+  "The ABT and Balaji result pages could not be examined. Their adapters read a page only if it has a table with a date column and a status column; anything else is reported as SCHEMA_DRIFT, never guessed.",
+  "Access data found inside Safexpress's website script belongs to Safexpress and is not used.")
+H2("Important functions")
+M("status_code (adapters/india.py)",
+  "Four of the couriers describe a status in a sentence. The Engine maps raw statuses one by one, which sentences would make impossible.",
+  "Recognized wording becomes one of seven codes (booked, picked-up, in-transit, out-for-delivery, delivered, undelivered, returned). Unrecognized wording is passed on unchanged and appears in the list of unmapped statuses.")
+M("local_time (adapters/india.py)",
+  "These couriers give times as Indian local time without saying so, in several notations.",
+  "It tries ISO first, then the day-first notations, takes a time without an offset as IST and returns UTC. An unreadable date is a PARSE_ERROR that does not quote the value.")
+M("history_events (adapters/tables.py)",
+  "A result page whose layout is unknown must still be read safely.",
+  "It finds the table whose header names a date and a status column and turns its rows into events; a 'no record found' page means not found; any other page is SCHEMA_DRIFT.")
+M("parse_packages (adapters/delhivery/parser.py)",
+  "Delhivery's answer nests scans inside shipments, and 'In Transit' means opposite things on the way out and on the way back.",
+  "It picks the shipment with the requested waybill and reports each scan as direction:status, for example UD:In Transit or RT:In Transit.")
+
+# ---------------------------------------------------------------- 15
+H1("15. Current state, open points and what comes next")
 H2("Verified")
-B("660 automated tests pass: 99 contract, 177 Engine, 298 adapter, 29 human-interface, 57 end-to-end.",
+B("804 automated tests pass: 99 contract, 181 Engine, 438 adapter, 29 human-interface, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")

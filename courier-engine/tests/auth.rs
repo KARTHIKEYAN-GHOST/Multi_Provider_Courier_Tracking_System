@@ -51,7 +51,19 @@ async fn a_valid_key_is_accepted(pool: PgPool) {
         .iter()
         .map(|p| p["code"].as_str().unwrap())
         .collect();
-    assert_eq!(codes, ["demosite", "dhl", "dummy"]);
+    assert_eq!(
+        codes,
+        [
+            "abt",
+            "balaji",
+            "delhivery",
+            "demosite",
+            "dhl",
+            "dummy",
+            "safexpress",
+            "skyking"
+        ]
+    );
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

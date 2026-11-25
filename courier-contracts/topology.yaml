@@ -68,6 +68,81 @@ queues:
       - exchange: courier.jobs
         routing_key: job.resume.v1.demosite
 
+  - name: adapter.delhivery.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.delhivery.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.delhivery
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.delhivery
+
+  - name: adapter.safexpress.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.safexpress.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.safexpress
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.safexpress
+
+  - name: adapter.skyking.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.skyking.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.skyking
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.skyking
+
+  - name: adapter.abt.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.abt.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.abt
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.abt
+
+  - name: adapter.balaji.jobs
+    durable: true
+    consumer: adapter-worker
+    arguments:
+      x-queue-type: quorum
+      x-delivery-limit: 3
+      x-dead-letter-exchange: courier.dlx
+      x-dead-letter-routing-key: adapter.balaji.jobs
+    bindings:
+      - exchange: courier.jobs
+        routing_key: job.track.v1.balaji
+      # A lookup continued after a human answer; same queue, same delivery limit.
+      - exchange: courier.jobs
+        routing_key: job.resume.v1.balaji
+
   - name: engine.events
     durable: true
     consumer: engine-event-consumer
@@ -112,6 +187,51 @@ queues:
     bindings:
       - exchange: courier.dlx
         routing_key: adapter.demosite.jobs
+
+  - name: adapter.delhivery.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.delhivery.jobs
+
+  - name: adapter.safexpress.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.safexpress.jobs
+
+  - name: adapter.skyking.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.skyking.jobs
+
+  - name: adapter.abt.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.abt.jobs
+
+  - name: adapter.balaji.jobs.dlq
+    durable: true
+    consumer: engine-dead-letter-consumer
+    arguments:
+      x-queue-type: quorum
+    bindings:
+      - exchange: courier.dlx
+        routing_key: adapter.balaji.jobs
 
   # Events the Engine itself rejected as malformed. Parked for operators; not auto-consumed.
   - name: engine.events.dlq

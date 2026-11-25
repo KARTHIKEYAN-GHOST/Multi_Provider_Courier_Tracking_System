@@ -67,6 +67,11 @@ def interventions(stack: Stack, job_id: str) -> list[dict]:
     )
 
 
+STAMPS_AND_IDS = re.compile(
+    r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)?|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+)
+
+
 def session_ref(stack: Stack, intervention_id: str) -> str:
     (row,) = stack.query("SELECT session_ref::text AS ref FROM human_interventions WHERE id = %s", intervention_id)
     return str(row["ref"])
@@ -115,7 +120,8 @@ def test_a_one_time_code_is_asked_for_answered_and_the_same_attempt_continues(st
     assert {m["body"].count('"job.resume"') for m in messages} == {0, 1}
     assert all(code not in m["body"] for m in messages)
     for name, text in stack.log_files().items():
-        assert code not in text, f"the answer appears in {name}"
+        # A 6-digit code can turn up by chance inside a timestamp's microseconds or an ID.
+        assert code not in STAMPS_AND_IDS.sub("", text), f"the answer appears in {name}"
     # The worker fetched it over the internal API, and that was recorded.
     audit = stack.query(
         "SELECT action, outcome FROM audit_log WHERE action = 'intervention.resolve' ORDER BY id DESC LIMIT 1"
