@@ -30,7 +30,7 @@ import secrets
 import signal
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, NoReturn, Protocol
 
@@ -70,7 +70,7 @@ from .credentials import CredentialDenied, CredentialResolver, HttpCredentialRes
 from .errors import SavedSessionLost, ShipmentNotFound, describe
 from .interventions import Challenge, NeedsHuman
 from .logging import get_logger
-from .sessions import RedisSessionStore, SessionStore
+from .sessions import RedisSessionStore, SessionStore, SessionStoreUnavailable
 from .testing import FaultInjection, SimulateCrash, SimulateDuplicateResult, SimulateHang
 from .topology import WorkerRoutes, routes_for
 
@@ -119,6 +119,18 @@ class EventPublisher(Protocol):
 
 class SessionLost(Exception):
     """The broker session must be torn down (a result could not be published)."""
+
+
+class _AlreadyReported(Exception):
+    """This resume's outcome already reached the broker; the delivery is a leftover copy."""
+
+
+@dataclass(frozen=True)
+class _Lease:
+    """The right to continue one session. ``owner`` is a secret of this execution."""
+
+    session_ref: str
+    owner: str = field(repr=False)
 
 
 @dataclass
@@ -219,11 +231,26 @@ class Worker:
             credential_ref=job.credential_ref,
             _resolver=self.resolver,
         )
-        started_at = utc_now()
-        clock = time.monotonic()
+        lease: _Lease | None = None
         try:
+            refused: _Outcome | None = None
+            if isinstance(job, JobResume) and self.sessions is not None:
+                # Only one execution at a time may continue a session (see _take_lease).
+                try:
+                    lease = await self._take_lease(execution, job)
+                except _AlreadyReported:
+                    # Another delivery of this resume finished and its outcome is with the
+                    # broker. Nothing is lost by acknowledging this copy.
+                    execution.log.info("resume_already_reported")
+                    await delivery.ack()
+                    return
+                except SessionStoreUnavailable as error:
+                    # Without the store nobody can tell who is continuing: do not execute.
+                    refused = _Outcome(Outcome.FAILURE, error=describe(error))
+            started_at = utc_now()
+            clock = time.monotonic()
             await self._publish_started(execution, started_at)
-            result = await self._execute(execution, ctx)
+            result = (False, refused) if refused is not None else await self._execute(execution, ctx)
             if result is None:  # a simulated hang: nothing more happens for this job
                 return
             duplicate, outcome = result
@@ -231,16 +258,111 @@ class Worker:
                 await self._publish_intervention(execution, started_at, clock, outcome)
             else:
                 await self._publish_result(execution, started_at, clock, outcome, duplicate=duplicate)
+            if lease is not None:
+                await self._mark_reported(execution, lease)
             await delivery.ack()
-            if isinstance(job, JobResume) and self.sessions is not None:
+            if lease is not None and self.sessions is not None:
                 # Reported and acknowledged: the session this execution continued is used up.
-                await self.sessions.delete(job.session_ref)
+                await self.sessions.delete(lease.session_ref)
         except SessionLost:
             # Not acknowledged. The session owner drops the connection, RabbitMQ returns the
             # message and counts the failed delivery.
             self.session_lost.set()
         finally:
-            await ctx._close(self.settings.worker_cleanup_timeout_s)
+            # Also on errors, cancellation and shutdown: nothing here may keep a lease.
+            try:
+                if lease is not None:
+                    await self._release_lease(execution, lease)
+            finally:
+                await ctx._close(self.settings.worker_cleanup_timeout_s)
+
+    # ------------------------------------------------------------------ resume lease
+
+    def _lease_lifetime_s(self, job: JobTrack) -> float:
+        """How long a resume lease lasts: the adapter's execution budget (enforced by
+        ``asyncio.timeout``, and including loading the session and fetching the answer) plus
+        a margin for the start notice, the result and the acknowledgement. An execution
+        therefore finishes inside its lease unless the process stalls; a lease that outlives
+        its worker is gone after this time at the latest."""
+        return job.timeout_ms / 1000 + self.settings.worker_resume_lease_margin_s
+
+    async def _take_lease(self, execution: _Execution, job: JobResume) -> _Lease:
+        """Waits for the exclusive right to continue the session of a ``job.resume``.
+
+        RabbitMQ may deliver the same resume to two workers at once. Without this, both
+        would load the session, fetch the user's answer and submit it to the provider.
+
+        * Lease free: take it and execute.
+        * Lease taken: another execution is running. This one waits, keeping its message
+          unacknowledged, and looks again. It ends in one of three ways: the other execution
+          reports (this copy is acknowledged), the other execution fails or its worker dies
+          (the lease is released or expires and this one executes), or the wait runs out
+          (the message goes back to the broker, as when a result cannot be published).
+
+        Raises ``_AlreadyReported``, ``SessionStoreUnavailable`` or ``SessionLost``.
+        """
+        sessions = self.sessions
+        assert sessions is not None
+        lifetime_s = self._lease_lifetime_s(job)
+        # A lease is released or has expired after one lifetime; twice that covers a second
+        # execution that took it first.
+        give_up = time.monotonic() + 2 * lifetime_s
+        waiting = False
+        while True:
+            if await sessions.was_reported(job.session_ref):
+                raise _AlreadyReported
+            owner = await sessions.acquire_lease(job.session_ref, lifetime_s)
+            if owner is not None:
+                lease = _Lease(job.session_ref, owner)
+                # The previous holder may have reported between the two calls above.
+                try:
+                    reported = await sessions.was_reported(job.session_ref)
+                except BaseException:
+                    await self._release_lease(execution, lease)
+                    raise
+                if reported:
+                    await self._release_lease(execution, lease)
+                    raise _AlreadyReported
+                if waiting:
+                    execution.log.info("resume_lease_taken_after_waiting")
+                return lease
+            if not waiting:
+                waiting = True
+                execution.log.info("resume_deferred", reason="another execution is continuing this session")
+            if time.monotonic() >= give_up:
+                execution.log.error("resume_lease_wait_exhausted", waited_s=round(2 * lifetime_s, 1))
+                raise SessionLost("the resume lease stayed taken")
+            await asyncio.sleep(self.settings.worker_resume_lease_poll_s)
+
+    async def _mark_reported(self, execution: _Execution, lease: _Lease) -> None:
+        """After the broker confirmed the outcome and before the acknowledgement: a copy of
+        this resume that arrives later is recognized instead of being executed again."""
+        assert self.sessions is not None
+        try:
+            await self.sessions.mark_reported(lease.session_ref, self.settings.worker_session_ttl_s)
+        except Exception as error:
+            # The outcome is reported; only the shortcut for later copies is missing.
+            execution.log.warning("resume_not_marked_reported", error_type=type(error).__name__)
+
+    async def _release_lease(self, execution: _Execution, lease: _Lease) -> None:
+        """Gives the lease back. Shielded and bounded like job cleanup: a cancelled job still
+        releases it, and a store that does not answer cannot hold up shutdown (the lease then
+        expires by itself). The owner token is never logged."""
+        assert self.sessions is not None
+        timeout_s = self.settings.worker_cleanup_timeout_s
+        releasing = asyncio.ensure_future(self.sessions.release_lease(lease.session_ref, lease.owner))
+        try:
+            released = await asyncio.wait_for(asyncio.shield(releasing), timeout_s)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(releasing, timeout_s)
+            raise
+        except Exception as error:
+            execution.log.warning("resume_lease_not_released", error_type=type(error).__name__)
+            return
+        if not released:
+            # It expired (or the store was unreachable) before this execution was done.
+            execution.log.warning("resume_lease_was_no_longer_held")
 
     async def _accept(self, delivery: Delivery) -> _Execution | None:
         """Validates the message and decides whether to execute it."""
@@ -341,7 +463,9 @@ class Worker:
         session = await self.sessions.load(job.session_ref)
         if session is None:
             raise SavedSessionLost("the session saved for this lookup has expired or is gone")
-        response = await self.resolver.intervention_response(job.intervention_id, job.job_id, job.attempt)
+        response = await self.resolver.intervention_response(
+            job.intervention_id, job.session_ref, job.job_id, job.attempt
+        )
         return await self.adapter.resume(request, ctx, session, response)
 
     async def _pause(self, challenge: Challenge) -> _Outcome:
@@ -430,7 +554,13 @@ class Worker:
                     retryable=False,
                 ),
             )
+            execution.log.error("challenge_too_large", size=len(body))
+            # If this raises (the failure could not be published) the session stays: the
+            # message is redelivered, and whatever is then left expires by itself.
             await self._publish_result(execution, started_at, clock, failure, duplicate=False)
+            # Reported: nobody will ever be asked this question, so nobody will resume it.
+            if self.sessions is not None:
+                await self.sessions.delete(outcome.session_ref)
             return
         try:
             await self.publisher.publish(
@@ -601,6 +731,7 @@ class WorkerProcess:
                 store_url,
                 session_key,
                 prefix=f"{settings.worker_topology_prefix}courier:session:{adapter.key}:",
+                control_prefix=f"{settings.worker_topology_prefix}courier:resume:{adapter.key}:",
             )
         elif store_url or session_key:
             # Half configured: the worker runs, but a lookup that needs a person will fail.

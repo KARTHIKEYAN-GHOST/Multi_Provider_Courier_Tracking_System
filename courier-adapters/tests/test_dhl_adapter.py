@@ -119,7 +119,9 @@ class StaticResolver:
     async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret:
         return self.secret
 
-    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
+    async def intervention_response(
+        self, intervention_id: str, session_ref: str, job_id: str, attempt: int
+    ) -> str:
         raise AssertionError("not used")
 
 

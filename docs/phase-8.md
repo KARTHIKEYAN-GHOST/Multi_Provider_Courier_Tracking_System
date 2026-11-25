@@ -50,8 +50,11 @@ Points that matter:
 - **The answer never rides in a message.** `job.resume` carries only `intervention_id` and
   `session_ref`. The worker fetches the answer over the internal API with its worker token —
   the same rules as for credentials (right adapter, the job's current attempt, job running),
-  every fetch written to `audit_log` as `intervention.resolve`. It can be fetched again if
-  RabbitMQ redelivers the resume message.
+  and it must name the session it is continuing: the Engine hands the answer out only if that
+  is the `session_ref` stored with the challenge (otherwise 403, audited as
+  `session_mismatch`). Every fetch is written to `audit_log` as `intervention.resolve`. It
+  can be fetched again if RabbitMQ redelivers the resume message.
+- **One execution at a time continues a session.** See "Resume lease" below.
 - **Stored encrypted, deleted early.** The answer is sealed with the credential master key
   (AES-256-GCM envelope encryption, bound to the challenge and job), and deleted together with
   the CAPTCHA picture as soon as the challenge closes for any reason.
@@ -71,6 +74,7 @@ longest-standing subscriber. Everyone else gets 404, as for a challenge that doe
 |---|---|
 | Right answer | `job.result` closes the attempt as usual; challenge `completed` |
 | Provider refuses the answer and asks again | Old challenge `rejected`, a new one for the same attempt |
+| The challenge is too large to send (cannot happen with the current limits) | Job fails with `INTERNAL`; once that failure is confirmed the saved session is deleted |
 | More than `providers.max_challenges` (3) challenges in one job | Job `FAILED`, `CHALLENGE_LIMIT_EXCEEDED` (not retried) |
 | Nobody answers within the limit | Job `EXPIRED`, `INTERVENTION_EXPIRED`; the next poll or a manual refresh starts over |
 | Session gone (Redis restarted, expired, site forgot it) | Worker reports `SESSION_LOST` (retryable): a new attempt runs and asks again |
@@ -78,6 +82,64 @@ longest-standing subscriber. Everyone else gets 404, as for a challenge that doe
 
 The time to answer is the smaller of `providers.intervention_ttl_s` (600 s; 30–3600) and the
 lifetime the adapter reports for the challenge. The reaper enforces it (`interventions::expire_due`).
+
+## Resume lease
+
+RabbitMQ delivers at least once, so the same `job.resume` can be in the hands of two workers
+at the same moment. Without coordination both would load the session, fetch the answer and
+submit it to the provider. A lease in Redis (`courier_adapter_sdk/sessions.py`,
+`Worker._take_lease`) prevents that.
+
+| Property | How |
+|---|---|
+| Shared by all workers and replicas | Key `courier:resume:<adapter>:lease:<session_ref>` in the workers' Redis |
+| Atomic | `SET key <owner> NX PX <lifetime>`: of any number of simultaneous callers one succeeds |
+| Owned | The value is a random token made for that execution. Release is a compare-and-delete script, so a worker can only remove its own lease — also when its lease expired and somebody else holds it now |
+| Expires | Lifetime = the job's `timeout_ms` + `WORKER_RESUME_LEASE_MARGIN_S` (60 s). A lease left by a dead worker is gone after that |
+| Released | In a `finally` block, shielded from cancellation and bounded by the cleanup timeout: after reporting, on any exception, on shutdown and when the broker connection is lost |
+
+Why a fixed lifetime instead of renewal: everything inside the lease is already bounded. The
+adapter call (including loading the session and fetching the answer) is cancelled after
+`timeout_ms`; the start notice and the result are each published with a 10 s limit. The
+margin covers those, so an execution ends inside its lease unless the process itself stalls.
+No renewal task means no renewal task that can die or keep a lease alive for a stuck job.
+
+What a worker does with a `job.resume`:
+
+1. **Already reported?** Once an execution's outcome has been confirmed by the broker, it sets
+   a marker (`…:done:<session_ref>`, kept as long as a session). A copy that arrives later is
+   acknowledged without executing — safe, because the outcome is with the broker.
+2. **Lease free:** take it, execute, publish, set the marker, acknowledge, delete the session,
+   release the lease.
+3. **Lease taken:** another execution is running. The worker does *not* acknowledge and does
+   not reject. It keeps the message, waits and looks again every `WORKER_RESUME_LEASE_POLL_S`:
+   - the other execution reports → this copy is acknowledged (step 1);
+   - the other execution fails to report, or its worker dies → the lease is released or
+     expires, this worker takes it and executes with the session, which is still there;
+   - nothing changes for twice the lease lifetime → the message is left unacknowledged and the
+     broker connection is renewed, so RabbitMQ redelivers it (the same path as a result that
+     cannot be published; bounded by the queue's delivery limit).
+4. **Redis unreachable:** nobody can tell who is continuing, so the worker does not execute.
+   It reports `SESSION_LOST` (retryable) and the Engine starts the lookup again.
+
+### What the lease does not do
+
+It does **not** make the call to the provider exactly-once, and nothing on our side can:
+
+- A worker submits the code to the provider, the provider accepts it, and the worker dies (or
+  loses its broker connection) before the result is confirmed. Nobody knows whether the
+  provider consumed the code. When the lease expires, the redelivered resume runs again with
+  the same session and answer. Typical results: the provider says the step is no longer open
+  (the adapter reports `SESSION_LOST`, the lookup restarts and the user is asked again), or it
+  asks again (a new challenge). A second successful submission is possible if the provider
+  allows it. Lookups are read-only, so the cost is a repeated question, not wrong data.
+- If a process stalls for longer than its lease (a frozen host), another worker may start
+  while the first is still alive. The first one's late release cannot remove the second one's
+  lease, and the Engine accepts only one result per attempt, but both may have contacted the
+  provider.
+- If setting the marker fails (Redis went away after publishing), a waiting copy finds the
+  session deleted and reports `SESSION_LOST` for an attempt that is already closed; the Engine
+  records that execution as a duplicate and changes nothing.
 
 ## API
 
@@ -172,7 +234,8 @@ waiting (reloads every 15 s), one page per challenge with the prompt, the pictur
 
 ## Redis
 
-Used only by adapter workers, only for sessions (key `courier:session:<adapter>:<session_ref>`).
+Used only by adapter workers: for sessions (key `courier:session:<adapter>:<session_ref>`) and
+for coordinating resumes (`courier:resume:<adapter>:lease:…` and `…:done:…`, see "Resume lease").
 The Compose service keeps nothing on disk and requires a password; the host port is 56379
 (6379 is often taken by a local Redis). Losing Redis loses only waiting sessions: affected
 lookups report `SESSION_LOST`, restart, and ask again.
@@ -198,6 +261,10 @@ stored sessions unreadable, which is handled the same way as losing them.
 - Rotation tooling for `WORKER_SESSION_KEY` and the master key.
 
 ## Tests
+
+Review corrections (resume lease, session binding, orphaned sessions) are covered by
+`courier-adapters/tests/test_resume_lease.py`, the session tests in
+`courier-engine/tests/interventions.rs` and two end-to-end tests.
 
 | Suite | What Phase 8 added |
 |---|---|

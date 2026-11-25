@@ -111,6 +111,8 @@ async fn resolve(
 #[derive(Debug, Deserialize)]
 struct ResolveInterventionBody {
     intervention_id: Uuid,
+    /// The session the worker is about to continue; must be the one this challenge was raised with.
+    session_ref: Uuid,
     job_id: Uuid,
     attempt: i32,
 }
@@ -129,6 +131,7 @@ async fn resolve_intervention(
     };
     let request = ResponseRequest {
         intervention_id: body.intervention_id,
+        session_ref: body.session_ref,
         job_id: body.job_id,
         attempt: body.attempt,
     };

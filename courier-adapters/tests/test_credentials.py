@@ -195,3 +195,51 @@ async def test_a_job_whose_provider_has_no_credential_fails_without_asking_the_e
     publisher, _, _ = await run_job(resolver, capfd, None)
     assert resolver.calls == []
     assert publisher.results[0]["payload"]["error"]["class"] == "AUTH_INVALID"
+
+
+# ----------------------------------------------------------------------------- answers to challenges
+
+
+async def test_an_answer_is_requested_for_one_named_session() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"response": "424242"})
+
+    answer = await engine(handler).intervention_response("int-1", "session-1", "job-1", 3)
+    assert answer == "424242"
+    (request,) = seen
+    assert str(request.url) == "http://engine.internal:8081/internal/v1/interventions/resolve"
+    assert request.headers["authorization"] == f"Bearer {TOKEN}"
+    assert json.loads(request.content) == {
+        "intervention_id": "int-1",
+        "session_ref": "session-1",
+        "job_id": "job-1",
+        "attempt": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "retryable"),
+    [
+        (401, CredentialDenied, False),
+        (403, CredentialDenied, False),  # e.g. the session is not the challenge's own
+        (500, CredentialServiceUnavailable, True),
+    ],
+)
+async def test_a_refused_answer_is_permanent_and_an_outage_is_retryable(
+    status: int, error: type[Exception], retryable: bool
+) -> None:
+    resolver = engine(lambda request: httpx.Response(status, json={"error": {"code": "resolve_denied"}}))
+    with pytest.raises(error) as raised:
+        await resolver.intervention_response("i", "s", "j", 1)
+    assert raised.value.retryable is retryable  # type: ignore[attr-defined]
+    assert TOKEN not in str(raised.value)
+
+
+@pytest.mark.parametrize("body", [{}, {"response": ""}, {"response": 7}, {"response": None}])
+async def test_an_unreadable_answer_is_an_outage_not_an_answer(body: dict[str, Any]) -> None:
+    resolver = engine(lambda request: httpx.Response(200, json=body))
+    with pytest.raises(CredentialServiceUnavailable):
+        await resolver.intervention_response("i", "s", "j", 1)

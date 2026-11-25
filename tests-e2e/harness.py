@@ -183,6 +183,10 @@ class Stack:
         # Sessions of this run live under the run's own key prefix and are removed at the end.
         self.redis_url = find_redis(self.settings)
         self.session_prefix = f"{self.prefix}courier:session:"
+        # Resume leases and "already reported" markers of this run's workers.
+        self.resume_prefix = f"{self.prefix}courier:resume:"
+        #: Token of the demosite worker (set in conftest.py), for tests that play that worker.
+        self.demosite_token = ""
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.internal_url = f"http://127.0.0.1:{self.internal_port}"
         self.site_url = f"http://127.0.0.1:{self.site_port}"
@@ -394,14 +398,26 @@ class Stack:
         finally:
             client.close()
 
-    def drop_sessions(self) -> int:
-        """Deletes this run's sessions (only keys under the run's own prefix)."""
+    def _drop(self, prefix: str) -> int:
         if self.redis_url is None:
             return 0
         client = redis.Redis.from_url(self.redis_url)
         try:
-            keys = list(client.scan_iter(match=f"{self.session_prefix}*"))
+            keys = list(client.scan_iter(match=f"{prefix}*"))
             return int(client.delete(*keys)) if keys else 0
+        finally:
+            client.close()
+
+    def drop_sessions(self) -> int:
+        """Deletes this run's sessions (only keys under the run's own prefix)."""
+        return self._drop(self.session_prefix)
+
+    def resume_keys(self) -> list[str]:
+        """Names of this run's resume leases and reported markers in Redis."""
+        assert self.redis_url is not None
+        client = redis.Redis.from_url(self.redis_url)
+        try:
+            return sorted(key.decode() for key in client.scan_iter(match=f"{self.resume_prefix}*"))
         finally:
             client.close()
 
@@ -487,6 +503,7 @@ class Stack:
         self.interface.stop()
         self.engine.stop()
         self.drop_sessions()
+        self._drop(self.resume_prefix)
         self.delete_topology()
         self._management.close()
 

@@ -29,6 +29,12 @@ class WorkerSettings(BaseSettings):
     worker_session_key: SecretStr | None = None
     #: Longest time a session is kept, whatever the challenge says.
     worker_session_ttl_s: int = Field(default=4500, ge=60, le=86_400)
+    #: A resume lease lasts the job's execution budget plus this margin, which covers
+    #: publishing the start notice and the result and acknowledging the message. After that a
+    #: lease left behind by a dead worker is gone and another worker may continue.
+    worker_resume_lease_margin_s: float = Field(default=60.0, ge=0.05, le=3600)
+    #: How often a worker that found the lease taken looks again.
+    worker_resume_lease_poll_s: float = Field(default=0.25, ge=0.01, le=30)
     #: How many jobs run at the same time in this process.
     worker_concurrency: int = Field(default=4, ge=1, le=256)
     #: Unacknowledged messages RabbitMQ may hand this worker. Defaults to the concurrency.

@@ -65,8 +65,13 @@ class Secret(Mapping[str, str]):
 class CredentialResolver(Protocol):
     async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret: ...
 
-    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
-        """The user's answer to a challenge, for the job being resumed."""
+    async def intervention_response(
+        self, intervention_id: str, session_ref: str, job_id: str, attempt: int
+    ) -> str:
+        """The user's answer to a challenge, for the job being resumed.
+
+        ``session_ref`` names the session the worker is about to continue. The Engine hands
+        the answer out only if it is the session that challenge was raised with."""
         ...
 
 
@@ -97,8 +102,15 @@ class HttpCredentialResolver:
                 f"the Engine's internal API is unreachable ({type(error).__name__})"
             ) from None
 
-    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
-        body = {"intervention_id": intervention_id, "job_id": job_id, "attempt": attempt}
+    async def intervention_response(
+        self, intervention_id: str, session_ref: str, job_id: str, attempt: int
+    ) -> str:
+        body: dict[str, object] = {
+            "intervention_id": intervention_id,
+            "session_ref": session_ref,
+            "job_id": job_id,
+            "attempt": attempt,
+        }
         response = await self._post("/internal/v1/interventions/resolve", body)
         if response.status_code == 200:
             try:

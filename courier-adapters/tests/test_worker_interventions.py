@@ -69,13 +69,16 @@ class Answers:
 
     def __init__(self, answer: str | Exception = ANSWER) -> None:
         self.answer = answer
-        self.asked: list[tuple[str, str, int]] = []
+        #: (intervention_id, session_ref, job_id, attempt) of every request.
+        self.asked: list[tuple[str, str, str, int]] = []
 
     async def resolve(self, credential_ref: str, job_id: str, attempt: int) -> Secret:
         raise AssertionError("not used")
 
-    async def intervention_response(self, intervention_id: str, job_id: str, attempt: int) -> str:
-        self.asked.append((intervention_id, job_id, attempt))
+    async def intervention_response(
+        self, intervention_id: str, session_ref: str, job_id: str, attempt: int
+    ) -> str:
+        self.asked.append((intervention_id, session_ref, job_id, attempt))
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -182,7 +185,8 @@ async def test_resume_continues_with_the_saved_session_and_the_users_answer() ->
 
     assert delivery.acked
     assert rig.adapter.resumed == [({"cookie": "s3cr3t-cookie", "step": 1}, ANSWER)]  # type: ignore[attr-defined]
-    assert rig.answers.asked == [(intervention_id, track["payload"]["job_id"], 1)]
+    # The answer is asked for by naming the session that is being continued.
+    assert rig.answers.asked == [(intervention_id, session_ref, track["payload"]["job_id"], 1)]
     (outcome,) = rig.results
     assert outcome["outcome"] == "SUCCESS"
     assert outcome["attempt"] == 1, "the same logical attempt"

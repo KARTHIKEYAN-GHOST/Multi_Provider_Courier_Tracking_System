@@ -515,6 +515,8 @@ pub async fn submit(
 
 pub struct ResponseRequest {
     pub intervention_id: Uuid,
+    /// Reference of the session the worker holds for this challenge.
+    pub session_ref: Uuid,
     pub job_id: Uuid,
     pub attempt: i32,
 }
@@ -528,6 +530,7 @@ pub enum ResponseResolved {
 #[derive(sqlx::FromRow)]
 struct StoredAnswer {
     job_id: Uuid,
+    session_ref: Uuid,
     attempt: i32,
     status: String,
     key_version: Option<i32>,
@@ -538,8 +541,8 @@ struct StoredAnswer {
 }
 
 /// Hands a worker the user's answer for the job it is resuming. Allowed only to the worker
-/// of the job's adapter, for the job's current attempt while it is in flight, and only while
-/// the answer has not been used up. Repeatable, so a redelivered `job.resume` still works.
+/// of the job's adapter, for the job's current attempt while it is in flight, for the exact
+/// session the challenge was raised with, and only while the answer has not been used up. Repeatable, so a redelivered `job.resume` still works.
 /// Every request is audited (never with the answer).
 pub async fn resolve_response(
     pool: &PgPool,
@@ -554,7 +557,7 @@ pub async fn resolve_response(
             .fetch_optional(&mut *conn)
             .await?;
     let stored = sqlx::query_as::<_, StoredAnswer>(
-        "SELECT job_id, attempt, status, key_version, wrapped_key, key_nonce, ciphertext, nonce
+        "SELECT job_id, session_ref, attempt, status, key_version, wrapped_key, key_nonce, ciphertext, nonce
          FROM human_interventions WHERE id = $1",
     )
     .bind(request.intervention_id)
@@ -576,6 +579,11 @@ pub async fn resolve_response(
         };
         if stored.job_id != request.job_id || stored.attempt != request.attempt {
             break 'decide Err("intervention_not_for_this_attempt");
+        }
+        // The answer belongs to one session: the one the challenge was raised with. A worker
+        // holding any other session (an older challenge's, another job's) gets nothing.
+        if stored.session_ref != request.session_ref {
+            break 'decide Err("session_mismatch");
         }
         let (Some(key_version), Some(wrapped_key), Some(key_nonce), Some(ciphertext), Some(nonce)) = (
             stored.key_version,

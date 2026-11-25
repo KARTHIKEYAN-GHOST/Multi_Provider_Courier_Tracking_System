@@ -67,6 +67,11 @@ def interventions(stack: Stack, job_id: str) -> list[dict]:
     )
 
 
+def session_ref(stack: Stack, intervention_id: str) -> str:
+    (row,) = stack.query("SELECT session_ref::text AS ref FROM human_interventions WHERE id = %s", intervention_id)
+    return str(row["ref"])
+
+
 def test_a_one_time_code_is_asked_for_answered_and_the_same_attempt_continues(stack: Stack, user: User) -> None:
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
@@ -279,7 +284,12 @@ def test_only_the_worker_of_the_jobs_adapter_can_fetch_an_answer(stack: Stack, u
     request_id = user.submit(tracking_number, "demosite")
     challenge = challenge_for(user, request_id)
     job = user.job(request_id)
-    body = {"intervention_id": challenge["id"], "job_id": job["id"], "attempt": job["attempt"]}
+    body = {
+        "intervention_id": challenge["id"],
+        "session_ref": session_ref(stack, challenge["id"]),
+        "job_id": job["id"],
+        "attempt": job["attempt"],
+    }
     url = f"{stack.internal_url}/internal/v1/interventions/resolve"
     foreign = stack.admin("create-worker-token", "--adapter", "dummy").split("worker_token: ")[1].split()[0]
 
@@ -321,3 +331,96 @@ def test_the_human_interface_lets_a_user_sign_in_and_answer(stack: Stack, user: 
 
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
     assert user.api_key not in stack.log_files()["human-interface.log"]
+
+
+# ----------------------------------------------------------------------------- review corrections
+
+
+def test_the_answer_is_handed_out_only_for_the_session_of_its_challenge(stack: Stack, user: User) -> None:
+    """Even the right worker, for the right job and attempt, gets nothing for another session."""
+    tracking_number = number("OTP", "DEMO")
+    request_id = user.submit(tracking_number, "demosite")
+    challenge = challenge_for(user, request_id)
+    job = user.job(request_id)
+    url = f"{stack.internal_url}/internal/v1/interventions/resolve"
+    worker = {"Authorization": f"Bearer {stack.demosite_token}"}
+    body = {"intervention_id": challenge["id"], "job_id": job["id"], "attempt": job["attempt"]}
+    own = session_ref(stack, challenge["id"])
+    code = otp(tracking_number)
+
+    stack.stop_worker("demosite")  # so the test, not the worker, is the one asking
+    stack.set_provider("demosite", queue_wait_max_ms=120_000)  # the resume may wait for the restart
+    try:
+        assert answer(user, challenge["id"], code).status_code == 202
+
+        other = "01a2111d-b3a8-7cc2-a6b1-c5e86fea3eba"
+        denied = httpx.post(url, json={**body, "session_ref": other}, headers=worker)
+        assert denied.status_code == 403
+        assert code not in denied.text
+        unnamed = httpx.post(url, json=body, headers=worker)
+        assert 400 <= unnamed.status_code < 500
+        assert code not in unnamed.text
+        (audit,) = stack.query(
+            "SELECT outcome, reason FROM audit_log WHERE action = 'intervention.resolve' AND job_id = %s", job["id"]
+        )
+        assert (audit["outcome"], audit["reason"]) == ("denied", "session_mismatch")
+
+        granted = httpx.post(url, json={**body, "session_ref": own}, headers=worker)
+        assert granted.status_code == 200
+        assert granted.json() == {"response": code}
+    finally:
+        stack.set_provider("demosite", queue_wait_max_ms=8000)
+        stack.start_worker(adapter="demosite")
+    assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
+
+
+def test_copies_of_a_resume_message_submit_the_answer_to_the_site_once(stack: Stack, user: User) -> None:
+    """RabbitMQ may deliver job.resume more than once. Here two extra copies are put into the
+    queue by hand: one races the original, one arrives after everything is over."""
+    tracking_number = number("OTP", "DEMO")
+    request_id = user.submit(tracking_number, "demosite")
+    challenge = challenge_for(user, request_id)
+    job_id = user.job(request_id)["id"]
+
+    stack.stop_worker("demosite")  # let the copies queue up behind the original
+    stack.set_provider("demosite", queue_wait_max_ms=120_000)
+    try:
+        assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
+        (resume,) = wait_until(
+            lambda: stack.query(
+                "SELECT payload::text AS body FROM outbox_messages "
+                "WHERE message_type = 'job.resume' AND payload::text LIKE %s AND status = 'sent'",
+                f"%{job_id}%",
+            ),
+            10,
+            "the job.resume message to be published",
+        )
+        stack.publish("courier.jobs", "job.resume.v1.demosite", resume["body"])
+    finally:
+        stack.set_provider("demosite", queue_wait_max_ms=8000)
+        stack.start_worker(adapter="demosite")
+
+    view = user.wait_for(request_id)
+    assert (view["latest_job"]["status"], view["latest_job"]["attempt"]) == ("COMPLETED", 1)
+    stack.publish("courier.jobs", "job.resume.v1.demosite", resume["body"])  # a very late copy
+    wait_until(
+        lambda: stack.workers["demosite"].log_text().count("resume_already_reported") >= 2,
+        15,
+        "both copies to be recognized and acknowledged",
+    )
+
+    # One execution asked, one continued. A second submission would have been refused by the
+    # site (its token works once) and would show up here as another execution.
+    executions = stack.query(
+        "SELECT disposition::text AS d FROM adapter_execution_logs WHERE job_id = %s ORDER BY started_at", job_id
+    )
+    assert [row["d"] for row in executions] == ["suspended", "accepted"]
+    allowed = stack.query(
+        "SELECT 1 FROM audit_log WHERE action = 'intervention.resolve' AND outcome = 'allowed' AND job_id = %s", job_id
+    )
+    assert len(allowed) == 1, "the answer was fetched once"
+    assert user.job(request_id)["status"] == "COMPLETED"
+    # Nothing was dead-lettered and no lease is left; only the 'reported' marker remains.
+    assert stack.query("SELECT 1 FROM dead_letters WHERE job_id = %s", job_id) == []
+    assert not [key for key in stack.resume_keys() if ":lease:" in key]
+    assert any(key.endswith(session_ref(stack, challenge["id"])) and ":done:" in key for key in stack.resume_keys())

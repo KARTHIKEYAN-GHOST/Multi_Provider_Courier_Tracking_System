@@ -507,7 +507,9 @@ T(["Situation", "Result"], [
 H2("Why it is safe")
 B("The answer is never in a RabbitMQ message and never in a log. It is stored encrypted with the master key and deleted when the challenge closes.",
   "The session never reaches the Engine. In Redis it is ciphertext (AES-256-GCM, key WORKER_SESSION_KEY), bound to its reference, and it expires.",
-  "A challenge is visible to one user only; everybody else gets 404. Only a worker of the job's adapter can fetch the answer, and only while that attempt runs.",
+  "A challenge is visible to one user only; everybody else gets 404. Only a worker of the job's adapter can fetch the answer, only while that attempt runs, and only by naming the session the challenge was raised with.",
+  "Only one worker at a time may continue a session. A lease in Redis (taken atomically, owned by a random token, expiring by itself) stops two deliveries of the same job.resume from both submitting the answer. A copy that arrives after the outcome was reported is simply acknowledged.",
+  "The lease does not make provider calls exactly-once: a worker can submit the code and die before reporting. The resume then runs again after the lease expires, and the user may be asked once more.",
   "CAPTCHAs are never solved by software. The picture is passed to the user unchanged; only PNG, JPEG, GIF and WebP are accepted (no SVG, which can contain scripts).",
   "The prompt is written by the adapter. Text from the courier's page is untrusted and is never shown or followed.")
 H2("The human interface")
@@ -539,6 +541,9 @@ M("otp_required / captcha_required and Adapter.resume (SDK, interventions.py, ba
 M("Worker._pause / _call_adapter / _publish_intervention (SDK, worker.py)",
   "The worker must park a lookup without holding a slot, and continue it without ever exposing the answer.",
   "_pause stores the session under a new reference before anything is reported. _call_adapter, for job.resume, loads the session (missing means SESSION_LOST), fetches the answer and calls resume. The session is deleted only after the result is confirmed and acknowledged, so a redelivery can run again.")
+M("Worker._take_lease / _release_lease and the store's acquire_lease / release_lease (SDK)",
+  "RabbitMQ can hand the same job.resume to two workers at once; both must not submit the user's answer.",
+  "SET NX PX creates the lease only if absent, with a lifetime of the job's timeout plus a margin. A worker that finds it taken keeps its message and waits: it acknowledges if the other execution reports, takes over if the lease is released or expires, and hands the message back to the broker if the wait runs out. Release is compare-and-delete on the owner token, in a finally block.")
 M("SessionCipher and RedisSessionStore (SDK, sessions.py)",
   "Sessions can contain cookies and must survive a worker restart without being readable by anyone who reads Redis.",
   "seal() encrypts with AES-256-GCM using the session reference as authenticated data, so a value copied under another reference does not open. The store saves it with an expiry; an unreadable or missing value is treated as lost.")
@@ -554,7 +559,7 @@ B("job.resume is delivered to the adapter's normal jobs queue instead of a separ
 # ---------------------------------------------------------------- 14
 H1("14. Current state, open points and what comes next")
 H2("Verified")
-B("625 automated tests pass: 99 contract, 176 Engine, 266 adapter, 29 human-interface, 55 end-to-end.",
+B("660 automated tests pass: 99 contract, 177 Engine, 298 adapter, 29 human-interface, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")

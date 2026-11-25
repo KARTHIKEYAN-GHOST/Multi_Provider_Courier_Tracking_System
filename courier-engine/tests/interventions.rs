@@ -161,9 +161,26 @@ async fn worker(pool: &PgPool, adapter: &str) -> worker_tokens::WorkerIdentity {
         .unwrap()
 }
 
-async fn fetch_answer(pool: &PgPool, adapter: &str, job_id: Uuid, id: &str) -> Option<String> {
+/// The session reference stored with a challenge (what `job.resume` carries to the worker).
+async fn session_of(pool: &PgPool, id: &str) -> Uuid {
+    sqlx::query_scalar("SELECT session_ref FROM human_interventions WHERE id = $1")
+        .bind(Uuid::parse_str(id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A worker of `adapter` asks for the answer, naming the session it holds.
+async fn fetch_with_session(
+    pool: &PgPool,
+    adapter: &str,
+    job_id: Uuid,
+    id: &str,
+    session_ref: Uuid,
+) -> Result<String, &'static str> {
     let request = ResponseRequest {
         intervention_id: Uuid::parse_str(id).unwrap(),
+        session_ref,
         job_id,
         attempt: 1,
     };
@@ -171,9 +188,17 @@ async fn fetch_answer(pool: &PgPool, adapter: &str, job_id: Uuid, id: &str) -> O
         .await
         .unwrap()
     {
-        ResponseResolved::Response(answer) => Some(answer),
-        ResponseResolved::Denied(_) => None,
+        ResponseResolved::Response(answer) => Ok(answer),
+        ResponseResolved::Denied(reason) => Err(reason),
     }
+}
+
+/// The honest worker: it names the session the challenge was raised with.
+async fn fetch_answer(pool: &PgPool, adapter: &str, job_id: Uuid, id: &str) -> Option<String> {
+    let session_ref = session_of(pool, id).await;
+    fetch_with_session(pool, adapter, job_id, id, session_ref)
+        .await
+        .ok()
 }
 
 // ----------------------------------------------------------------------------- waiting
@@ -401,6 +426,54 @@ async fn an_answer_requeues_the_job_and_only_its_worker_can_fetch_it(pool: PgPoo
     );
 }
 
+/// The answer is bound to the session its challenge was raised with: the right worker, the
+/// right job and the right attempt are not enough without the right session.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn an_answer_is_handed_out_only_for_the_session_of_its_challenge(pool: PgPool) {
+    let (key, job_id, id) = waiting_job(&pool, json!({})).await;
+    answer(&pool, &key, &id, ANSWER).await;
+    let own = session_of(&pool, &id).await;
+
+    // Any other session reference is refused, whoever asks, and the refusal is recorded.
+    let stranger = Uuid::now_v7();
+    assert_eq!(
+        fetch_with_session(&pool, "dummy", job_id, &id, stranger).await,
+        Err("session_mismatch")
+    );
+    assert_eq!(
+        text(
+            &pool,
+            "SELECT reason FROM audit_log WHERE action = 'intervention.resolve' AND outcome = 'denied'"
+        )
+        .await,
+        "session_mismatch"
+    );
+    assert_eq!(scalar(&pool, "SELECT count(*) FROM audit_log WHERE action = 'intervention.resolve' AND outcome = 'allowed'").await, 0);
+    // Nothing changed: the answer is still stored, the job still waits for its worker.
+    assert_eq!(job_status(&pool).await, "QUEUED");
+    assert_eq!(scalar(&pool, "SELECT count(*) FROM human_interventions WHERE status = 'answered' AND ciphertext IS NOT NULL").await, 1);
+
+    // The challenge's own session still works afterwards.
+    assert_eq!(
+        fetch_with_session(&pool, "dummy", job_id, &id, own).await,
+        Ok(ANSWER.to_string())
+    );
+    // The other checks come first: a foreign adapter learns nothing about sessions.
+    assert_eq!(
+        fetch_with_session(&pool, "dhl", job_id, &id, own).await,
+        Err("job_belongs_to_another_adapter")
+    );
+    // Neither the answer nor anything secret is in the audit trail.
+    assert!(
+        !text(
+            &pool,
+            "SELECT string_agg(row_to_json(a)::text, ' ') FROM audit_log a"
+        )
+        .await
+        .contains(ANSWER)
+    );
+}
+
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn the_internal_api_hands_out_the_answer_only_with_a_worker_token(pool: PgPool) {
     let (key, job_id, id) = waiting_job(&pool, json!({})).await;
@@ -410,7 +483,8 @@ async fn the_internal_api_hands_out_the_answer_only_with_a_worker_token(pool: Pg
         .await
         .unwrap()
         .unwrap();
-    let body = json!({ "intervention_id": id, "job_id": job_id, "attempt": 1 });
+    let session_ref = session_of(&pool, &id).await;
+    let body = json!({ "intervention_id": id, "session_ref": session_ref, "job_id": job_id, "attempt": 1 });
     let path = "/internal/v1/interventions/resolve";
 
     let ok = call(
@@ -437,7 +511,7 @@ async fn the_internal_api_hands_out_the_answer_only_with_a_worker_token(pool: Pg
         .status,
         401
     );
-    let wrong_attempt = json!({ "intervention_id": id, "job_id": job_id, "attempt": 2 });
+    let wrong_attempt = json!({ "intervention_id": id, "session_ref": session_ref, "job_id": job_id, "attempt": 2 });
     let denied = call(
         &internal,
         Method::POST,
@@ -448,6 +522,28 @@ async fn the_internal_api_hands_out_the_answer_only_with_a_worker_token(pool: Pg
     .await;
     assert_eq!(denied.status, 403);
     assert_eq!(denied.body["error"]["code"], "resolve_denied");
+    // Another session than the challenge's own: the same refusal, and nothing of the answer.
+    let other_session = json!({ "intervention_id": id, "session_ref": Uuid::now_v7(), "job_id": job_id, "attempt": 1 });
+    let denied = call(
+        &internal,
+        Method::POST,
+        path,
+        Some(&token),
+        Some(other_session),
+    )
+    .await;
+    assert_eq!(denied.status, 403);
+    assert_eq!(denied.body["error"]["code"], "resolve_denied");
+    assert!(!denied.body.to_string().contains(ANSWER));
+    // A request that does not name its session at all is not a valid request.
+    let unnamed = json!({ "intervention_id": id, "job_id": job_id, "attempt": 1 });
+    let refused = call(&internal, Method::POST, path, Some(&token), Some(unnamed)).await;
+    assert!(
+        refused.status.is_client_error(),
+        "status {}",
+        refused.status
+    );
+    assert!(!refused.body.to_string().contains(ANSWER));
     // The public API has no such route.
     assert_eq!(
         call(&app(&pool), Method::POST, path, Some(&key), Some(body))
