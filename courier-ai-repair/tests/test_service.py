@@ -11,6 +11,7 @@ import pytest
 from ai_repair.config import Settings
 from ai_repair.engine import Sample, Task
 from ai_repair.guard import ADAPTERS, TESTS
+from ai_repair.llm import ModelError
 from ai_repair.sandbox import Bubblewrap, Run
 from ai_repair.service import Repairer, TaskFailed
 
@@ -120,8 +121,14 @@ def test_a_repair_is_rejected_tested_corrected_and_then_published(
             ),
             # 2: keeps the rules, but its own test fails
             answer({ADAPTER: good, TEST: TEST_FILE.replace("EXPECTED", "SchemaDrift")}),
-            # 3: right
-            answer({ADAPTER: good, TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound")}),
+            # 3: right. It also sends the fixture back, changed; that copy is ignored.
+            answer(
+                {
+                    ADAPTER: good,
+                    TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound"),
+                    f"{TESTS}/fixtures/balaji/{FIXTURE}": "<html>changed by the model</html>",
+                }
+            ),
         ]
     )
     before = head(remote)
@@ -168,6 +175,37 @@ def test_a_model_that_never_gets_it_right_publishes_nothing(
     assert "pytest failed" in str(raised.value)
     assert head(remote) == before
     assert not any(settings.ai_repair_work_dir.iterdir())
+
+
+class FlakyModel(ScriptedModel):
+    """Like a free router: sometimes no usable answer, and another model each time."""
+
+    def complete(self, system: str, messages: list[dict[str, str]]) -> str:
+        text = super().complete(system, messages)
+        self.last_model = f"vendor/model-{len(self.asked)}:free"
+        if text == "":
+            raise ModelError("the model vendor/thinker answered with nothing", retryable=True)
+        return text
+
+
+def test_an_empty_answer_costs_a_round_and_the_commit_names_the_model_that_wrote_the_code(
+    source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap
+) -> None:
+    good = answer(
+        {ADAPTER: repaired_adapter(source), TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound")}
+    )
+    model = FlakyModel(["", good])
+    done = Repairer(settings, model, sandbox).process(repair_task())
+    assert done.pushed
+    assert len(model.asked[1]) == 1, "the empty answer is not sent back as if it were a proposal"
+    assert "Written by the AI model vendor/model-2:free" in git(remote, "log", "-1", "--format=%B", "main")
+
+    with pytest.raises(TaskFailed, match="no usable answer"):
+        Repairer(settings, FlakyModel(["", "", ""]), sandbox).process(repair_task())
+    refused = FlakyModel([])
+    refused.complete = lambda system, messages: (_ for _ in ()).throw(ModelError("refused the API key"))  # type: ignore[method-assign]
+    with pytest.raises(TaskFailed, match="refused the API key"):
+        Repairer(settings, refused, sandbox).process(repair_task())
 
 
 def test_generated_tests_run_without_network_secrets_or_the_rest_of_the_disk(

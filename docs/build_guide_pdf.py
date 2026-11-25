@@ -646,14 +646,14 @@ B("The tests are written by the same model as the code. An adapter can pass them
 # ---------------------------------------------------------------- 16
 H1("16. Current state, open points and what comes next")
 H2("Verified")
-B("925 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 105 AI repair service, 57 end-to-end.",
+B("927 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 107 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
 B("The Docker images and the full container stack (make up, make smoke) had not been built at the time of writing; the Compose file itself validates.",
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
-  "The AI repair service has never called OpenRouter or pushed to GitHub: its tests use scripted model answers and a local Git repository.",
+  "The AI repair service has written one adapter with a free OpenRouter model in a dry run (cloned from GitHub, checked, tested, not pushed). It has never pushed to GitHub.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")

@@ -216,8 +216,9 @@ make setup                         # creates courier-ai-repair/.venv and courier
 make run-ai-repair                 # asks the Engine for work every 60 seconds
 ```
 
-Try it first with `AI_REPAIR_DRY_RUN=true`: everything happens except the push, and the
-task is reported as failed with the note "dry run".
+The service starts in dry-run mode: everything happens except the push, and the task is
+reported as failed with the note "dry run". Set `AI_REPAIR_DRY_RUN=false` in `.env` when
+finished work should really be pushed.
 
 ### On the other devices
 
@@ -261,7 +262,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 | `OPENROUTER_MODEL` | `openrouter/free` | the model that writes the code |
 | `AI_REPAIR_GITHUB_REPO`, `AI_REPAIR_GITHUB_TOKEN` | — | required |
 | `AI_REPAIR_PUSH_BRANCH` | `main` | where finished work is pushed |
-| `AI_REPAIR_DRY_RUN` | `false` | everything except the push |
+| `AI_REPAIR_DRY_RUN` | `true` | `true`: everything except the push. Set `false` to publish |
 | `AI_REPAIR_MAX_ROUNDS` | `3` | corrections the model may attempt |
 | `AI_REPAIR_POLL_S` | `60` | seconds between questions to the Engine |
 | `AI_REPAIR_ENGINE_URL` | `http://127.0.0.1:8081` | the Engine's internal API |
@@ -269,7 +270,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 
 ## Tests
 
-`make test-ai-repair` (105 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
+`make test-ai-repair` (107 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
 end-to-end tests of the service use a copy of this repository as a local Git remote, the
 real sandbox and the real adapter tests; only the model is replaced by scripted answers.
 No test calls OpenRouter or GitHub.

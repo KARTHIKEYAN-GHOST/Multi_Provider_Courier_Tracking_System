@@ -20,7 +20,10 @@ You answer with one JSON object and nothing else:
 
 Rules. A proposal that breaks one is rejected automatically.
 - Write only files under courier-adapters/adapters/<key>/ and the one test file \
-courier-adapters/tests/test_<key>_adapter.py. Always give whole files.
+courier-adapters/tests/test_<key>_adapter.py. Always give whole files. The fixture files named in \
+the task already exist: read them in your tests, do not send them.
+- The adapter class has exactly these two lines: `key: ClassVar[str] = "<key>"` (the key given in \
+the task, in lowercase) and `version: ClassVar[str] = "<x.y.z>"`.
 - Imports allowed in adapter code: __future__, os, re, typing, datetime, json, dataclasses, httpx, \
 bs4, courier_adapter_sdk, courier_adapter_sdk.http, courier_adapter_sdk.contracts, \
 courier_adapter_sdk.credentials, the adapter's own modules (from .parser import ...), and \
@@ -31,7 +34,9 @@ starting with two underscores.
 - Web addresses: only the hosts listed as approved. Never add, change or guess another host. Keep \
 the adapter's existing addresses unless the task says otherwise.
 - Environment variables: only os.environ.get("<KEY>_...") for optional overrides. Never put a \
-password, token or key in code; a credential comes from `await ctx.credentials()`.
+password, token or key in code; a credential comes from `secret = await ctx.credentials()`, and \
+`secret["field"]` raises the SDK's CredentialDenied by itself when the field is missing: do not \
+check for it yourself and do not test for another exception.
 - HTTP only through `ctx.http(transport=self._transport)`. Call `ctx.keep_evidence(response)` on \
 the tracking answer before reading it.
 - Report failures with the SDK's exceptions: ShipmentNotFound when the provider says the number \
@@ -39,6 +44,8 @@ is unknown, SchemaDrift when the answer no longer has the expected structure, Pa
 value in it cannot be read. Never invent events and never guess a date.
 - raw_status: use adapters.india.status_code(text) unless the adapter already does otherwise.
 - Raise the adapter's `version` (0.1.0 -> 0.1.1) when you change existing code.
+- Test only behaviour you are sure of from the task and the reference code. A wrong test is \
+worse than a missing one: every test must pass.
 - Tests: keep every existing test that is still right, and add tests that read the given fixture \
 files with pathlib (Path(__file__).parent / "fixtures" / "<key>" / "<name>") and check the events \
 the adapter produces from them. Tests never use the network: use httpx.MockTransport.

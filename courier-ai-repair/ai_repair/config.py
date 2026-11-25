@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     ai_repair_llm_retry_wait_s: float = Field(default=30.0, ge=0, le=600)
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     ai_repair_llm_timeout_s: float = Field(default=240.0, ge=10, le=900)
-    ai_repair_max_output_tokens: int = Field(default=16000, ge=1000, le=64000)
+    #: Room for the answer. Models that think before answering use part of it for that.
+    ai_repair_max_output_tokens: int = Field(default=32000, ge=1000, le=128000)
 
     #: "owner/name" of the GitHub repository the service clones and pushes to.
     ai_repair_github_repo: str = ""
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
     ai_repair_git_name: str = "courier-ai-repair"
     ai_repair_git_email: str = "courier-ai-repair@users.noreply.github.com"
     #: true = do everything except the push (to look at what it would publish).
-    ai_repair_dry_run: bool = False
+    ai_repair_dry_run: bool = True
 
     #: How often the model may try again after its proposal was rejected or its tests failed.
     ai_repair_max_rounds: int = Field(default=3, ge=1, le=6)

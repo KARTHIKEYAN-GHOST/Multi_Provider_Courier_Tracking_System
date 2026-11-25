@@ -90,6 +90,11 @@ def test_the_model_is_asked_through_openrouter_and_nothing_about_the_installatio
         (500, {}, "HTTP 500"),
         (200, {"choices": []}, "no message"),
         (200, {"choices": [{"message": {"content": " "}}]}, "nothing"),
+        (
+            200,
+            {"model": "v/thinker", "choices": [{"finish_reason": "length", "message": {"content": "{"}}]},
+            "v/thinker ran out of its output allowance",
+        ),
     ],
 )
 def test_openrouter_problems_are_named_without_the_key(
@@ -118,6 +123,7 @@ def test_a_model_that_cannot_be_told_to_answer_in_json_is_asked_again_without_th
     model = OpenRouterModel(API_KEY, "vendor/small:free", transport=httpx.MockTransport(handler))
     assert model.complete("s", []) == "{}"
     assert ["response_format" in body for body in bodies] == [True, False]
+    assert ["reasoning" in body for body in bodies] == [True, False]
 
 
 def test_a_busy_free_model_is_asked_again_a_few_times() -> None:

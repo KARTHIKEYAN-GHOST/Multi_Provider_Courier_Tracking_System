@@ -69,13 +69,26 @@ def main() -> int:
     once = "--once" in sys.argv[1:]
     log.info("repair_service_started", model=settings.openrouter_model, dry_run=settings.ai_repair_dry_run,
              branch=settings.ai_repair_push_branch)  # fmt: skip
+    print(
+        "The repair service keeps running and waits for tasks; it is silent while there are none. "
+        "Stop it with Ctrl+C.",
+        file=sys.stderr,
+    )
+    idle_reported = False
     try:
         while True:
             try:
                 worked = run_once(engine, repairer)
             except EngineUnavailable as error:
                 log.warning("engine_unavailable", reason=str(error))
-                worked = False
+                worked, idle_reported = False, False
+            else:
+                if worked:
+                    idle_reported = False
+                elif not idle_reported:
+                    # Said once, not every minute: the Engine answers, there is just no work.
+                    log.info("no_task_waiting", engine="reachable", next_check_s=settings.ai_repair_poll_s)
+                    idle_reported = True
             if once:
                 return 0
             if not worked:

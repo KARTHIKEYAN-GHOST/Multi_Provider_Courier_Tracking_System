@@ -9,10 +9,17 @@ clone or a command line, and it does not reach the sandbox.
 from __future__ import annotations
 
 import base64
+import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
+
+_NETWORK_TRIES = 4
+_NETWORK_TROUBLE = re.compile(
+    r"Could not resolve host|Failed to connect|Connection timed out|Connection reset|Temporary failure"
+)
 
 
 class GitError(Exception):
@@ -25,6 +32,7 @@ class Workspace:
     ) -> None:
         self._url, self._branch, self._token = url, branch, token
         self._name, self._email = name, email
+        self.network_wait_s = 15.0
         work_dir.mkdir(parents=True, exist_ok=True)
         self._root = Path(tempfile.mkdtemp(prefix="task-", dir=work_dir))
         self.repo = self._root / "repo"
@@ -47,10 +55,18 @@ class Workspace:
                 "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
             }
         command = ["git", "-c", "core.hooksPath=/dev/null", "-c", "protocol.ext.allow=never", *arguments]
-        done = subprocess.run(
-            command, cwd=cwd or self.repo, env=environment, capture_output=True, text=True,
-            errors="replace", timeout=300, check=False, stdin=subprocess.DEVNULL,
-        )  # fmt: skip
+        # Talking to GitHub is tried again when the network, not GitHub, is the problem.
+        for attempt in range(_NETWORK_TRIES):
+            done = subprocess.run(
+                command, cwd=cwd or self.repo, env=environment, capture_output=True, text=True,
+                errors="replace", timeout=300, check=False, stdin=subprocess.DEVNULL,
+            )  # fmt: skip
+            if done.returncode == 0 or not remote or not _NETWORK_TROUBLE.search(done.stderr):
+                break
+            if attempt + 1 < _NETWORK_TRIES:
+                if arguments[0] == "clone":
+                    shutil.rmtree(self.repo, ignore_errors=True)
+                time.sleep(self.network_wait_s)
         if done.returncode != 0:
             detail = (done.stderr or done.stdout).strip().splitlines()[-3:]
             text = " | ".join(detail)

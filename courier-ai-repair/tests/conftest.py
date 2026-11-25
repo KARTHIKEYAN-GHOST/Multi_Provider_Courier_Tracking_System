@@ -55,6 +55,8 @@ def settings(tmp_path: Path, remote: Path) -> Settings:
         ai_repair_work_dir=tmp_path / "work",
         ai_repair_adapters_venv=str(VENV),
         openrouter_model="test/fake-model",
+        # Said here, so the tests do not depend on what the default is.
+        ai_repair_dry_run=False,
     )
 
 

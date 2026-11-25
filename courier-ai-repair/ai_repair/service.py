@@ -75,6 +75,7 @@ def _fixture(key: str, name: str, body: Any) -> tuple[str, str]:
 class Repairer:
     def __init__(self, settings: Settings, model: Model, sandbox: Sandbox) -> None:
         self._settings, self._model, self._sandbox = settings, model, sandbox
+        self._used = model.name
 
     # ------------------------------------------------------------------ the checks
 
@@ -130,9 +131,23 @@ class Repairer:
         messages = [{"role": "user", "content": first_message}]
         problem = "the model was not asked"
         for round_number in range(1, self._settings.ai_repair_max_rounds + 1):
-            answer = self._model.complete(prompts.SYSTEM, messages)
+            try:
+                answer = self._model.complete(prompts.SYSTEM, messages)
+            except ModelError as error:
+                if not error.retryable:
+                    raise
+                # No usable answer this time (a busy or weak model). Asking again costs a round.
+                problem = f"the model gave no usable answer: {error}"
+                log.info("proposal_not_accepted", adapter=key, round=round_number, problem=problem[:300])
+                continue
+            self._used = str(getattr(self._model, "last_model", self._model.name))
+            log.info("model_answered", adapter=key, round=round_number, model=self._used)
             try:
                 proposal = parse_proposal(answer)
+                # Models like to send the fixture files back. They exist already, written by
+                # this service from the real answers; a copy from the model is ignored.
+                fixture_dir = f"{TESTS}/fixtures/{key}/"
+                proposal.files[:] = [f for f in proposal.files if not f.path.startswith(fixture_dir)]
                 guard.check_proposal(proposal.files, key, hosts, before=before, fixtures=fixtures)
             except (ModelError, Rejected) as error:
                 problem = f"rejected before running: {error}"
@@ -248,7 +263,7 @@ class Repairer:
                 raise TaskFailed(f"unknown kind of task '{task.kind}'")
             message = (
                 f"{title}\n\n{summary}\n\n"
-                f"Written by the AI model {self._model.name} and published by the repair service "
+                f"Written by the AI model {self._used} and published by the repair service "
                 f"without human review, after its automatic checks passed "
                 f"(code rules, ruff, mypy, the adapter's tests in a sandbox).\n\nRepair-Task: {task.id}"
             )
