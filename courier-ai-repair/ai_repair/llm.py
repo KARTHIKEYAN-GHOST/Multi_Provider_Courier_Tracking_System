@@ -53,9 +53,11 @@ class OpenRouterModel:
         retries: int = 3,
         retry_wait_s: float = 30.0,
     ) -> None:
-        self.name = model
-        #: The model that really answered last; a router such as openrouter/free picks one per call.
-        self.last_model = model
+        #: First choice, then the ones to fall back on (OpenRouter accepts at most three).
+        self._models = [name.strip() for name in model.split(",") if name.strip()][:3] or [model]
+        self.name = self._models[0]
+        #: The model that really answered last: a fallback, or a router's pick, can differ.
+        self.last_model = self.name
         self._max_tokens = max_tokens
         self._retries, self._retry_wait_s = retries, retry_wait_s
         # No referer or title header: nothing about this installation is sent along.
@@ -79,7 +81,7 @@ class OpenRouterModel:
 
     def complete(self, system: str, messages: list[dict[str, str]]) -> str:
         body: dict[str, Any] = {
-            "model": self.name,
+            **({"models": self._models} if len(self._models) > 1 else {"model": self.name}),
             "messages": [{"role": "system", "content": system}, *messages],
             "temperature": 0,
             "max_tokens": self._max_tokens,
@@ -93,6 +95,12 @@ class OpenRouterModel:
             # Some models cannot be told to answer in JSON or how much to think. The
             # instructions ask for JSON anyway.
             del body["response_format"], body["reasoning"]
+            response = self._post(body)
+        if response.status_code in (400, 404) and "models" in body:
+            # One name in the list is refused outright when OpenRouter no longer has that
+            # model (free models come and go). The last entry is the safest one left.
+            del body["models"]
+            body["model"] = self._models[-1]
             response = self._post(body)
         for _ in range(self._retries):
             if response.status_code != 429:

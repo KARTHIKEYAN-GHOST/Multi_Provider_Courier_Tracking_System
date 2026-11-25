@@ -137,12 +137,46 @@ def test_a_busy_free_model_is_asked_again_a_few_times() -> None:
     assert next(calls, None) is None
 
 
-def test_the_free_router_is_the_model_when_none_is_named() -> None:
+def test_free_models_are_used_when_none_is_named_best_first_with_fallbacks() -> None:
     from ai_repair.config import Settings
 
     settings = Settings(_env_file=None)
-    assert settings.openrouter_model == "openrouter/free"
+    names = settings.openrouter_model.split(",")
+    assert len(names) == 3
+    assert all(name.endswith(":free") for name in names[:2])
+    assert names[-1] == "openrouter/free"
     assert "OPENROUTER_MODEL" not in settings.missing()
+
+
+def test_several_models_are_sent_as_first_choice_and_fallbacks() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"model": "b/second", "choices": [{"message": {"content": "{}"}}]})
+
+    model = OpenRouterModel(
+        API_KEY, "a/first, b/second ,c/third,d/fourth", transport=httpx.MockTransport(handler)
+    )
+    assert model.complete("s", []) == "{}"
+    assert bodies[0]["models"] == ["a/first", "b/second", "c/third"]
+    assert "model" not in bodies[0]
+    assert (model.name, model.last_model) == ("a/first", "b/second")
+
+
+def test_a_model_that_no_longer_exists_does_not_stop_the_service() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if "models" in bodies[-1]:
+            return httpx.Response(400, json={"error": {"message": "a/gone is not a valid model ID"}})
+        return httpx.Response(200, json={"model": "c/last", "choices": [{"message": {"content": "{}"}}]})
+
+    model = OpenRouterModel(API_KEY, "a/gone,c/last", transport=httpx.MockTransport(handler))
+    assert model.complete("s", []) == "{}"
+    assert bodies[-1]["model"] == "c/last"
+    assert model.last_model == "c/last"
 
 
 def test_the_models_answer_is_read_strictly() -> None:

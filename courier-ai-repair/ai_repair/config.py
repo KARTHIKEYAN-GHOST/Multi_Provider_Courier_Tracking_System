@@ -20,10 +20,11 @@ class Settings(BaseSettings):
     engine_repair_token: SecretStr = SecretStr("")
 
     openrouter_api_key: SecretStr = SecretStr("")
-    #: An OpenRouter model name as shown at openrouter.ai/models. The default is OpenRouter's
-    #: own router over the models that cost nothing at the moment: fine for trying the
-    #: service out, but which model answers changes from call to call.
-    openrouter_model: str = "openrouter/free"
+    #: The model that writes the code: a name from openrouter.ai/models, or several separated
+    #: by commas. The first is used; the next ones only when it is unavailable or rate-limited.
+    #: The default is free: the two free models that did best when all free models were tried
+    #: on this service's own tasks (docs/phase-9.md), then OpenRouter's pick among free models.
+    openrouter_model: str = "baidu/ernie-5.5-flash-preview:free,particle-ai/particle-1:free,openrouter/free"
     #: How often a call is repeated when OpenRouter says "too many requests" (free models
     #: say it often), and how long to wait in between.
     ai_repair_llm_retries: int = Field(default=3, ge=0, le=10)

@@ -174,16 +174,42 @@ OPENROUTER_API_KEY=sk-or-v1-…
 OPENROUTER_MODEL=<the model's name>      # optional
 ```
 
-**Free models.** Without `OPENROUTER_MODEL` the service uses `openrouter/free`, OpenRouter's
-router over the models that cost nothing at the moment. That is enough to try the service
-out, with three things to know:
+**Free models.** Without `OPENROUTER_MODEL` the service uses free models, best first:
 
-- Which model answers changes from call to call, and free models are weaker at writing
-  code. Expect more tasks to end as "no acceptable proposal after 3 rounds". Nothing is
-  published in that case. For real use, name a strong coding model.
-- Free models are rate-limited per day and per minute. The service waits and repeats a
-  call that was refused for that reason (`AI_REPAIR_LLM_RETRIES`, default 3, 30 seconds
-  apart).
+```
+baidu/ernie-5.5-flash-preview:free,particle-ai/particle-1:free,openrouter/free
+```
+
+`OPENROUTER_MODEL` takes one name or up to three separated by commas. The first is used; the
+others only when it is unavailable or rate-limited. The last entry, `openrouter/free`, is
+OpenRouter's own pick among whatever is free at that moment.
+
+The order comes from a trial on 25 November 2026: every free text model OpenRouter offered
+was run through this service on its own two kinds of task, in dry-run mode, three rounds at
+most. "Passed" means the code got through the guard, ruff, mypy and its tests in the sandbox.
+
+| Model | New adapter | Repair | Notes |
+|---|---|---|---|
+| `baidu/ernie-5.5-flash-preview:free` | passed, round 1 | passed, round 3 | the only one that passed both |
+| `particle-ai/particle-1:free` | passed, round 1 | no result | repair run stopped by the rate limit |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | passed, round 2 | failed | its own test failed |
+| `nvidia/nemotron-3.5-super-vl:free` | passed, round 3 | failed | its own test failed |
+| `nvidia/nemotron-3.5-lightning:free` | failed | not run | wrote invalid Python |
+| `inclusionai/ling-3.2-flash:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it:free` | no result | not run | rate-limited before answering |
+| `recursive/flint-v1.0:free`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | no result | not run | too slow; stopped |
+
+This is one run per model on two tasks, so it shows which models can do the work, not how
+often. Free models are also added and withdrawn without notice: look at
+<https://openrouter.ai/models> now and then. A name that no longer exists does not stop the
+service; it falls back to the last entry of the list.
+
+Three more things to know about free models:
+
+- Free models are rate-limited per minute and per day, for the whole account. The service
+  waits and repeats a refused call (`AI_REPAIR_LLM_RETRIES`, default 3, 30 seconds apart),
+  and an answer that never comes costs one of the task's rounds.
+- They are weaker at writing code than paid models. Expect some tasks to end as "no
+  acceptable proposal after 3 rounds". Nothing is published in that case.
 - Providers of free models may keep and train on what is sent to them, and OpenRouter
   offers them only if the account's privacy settings allow that. What is sent here is
   adapter source code and scrubbed courier answers.
@@ -259,7 +285,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 |---|---|---|
 | `ENGINE_REPAIR_TOKEN` | — | shared by Engine and service; at least 32 characters |
 | `OPENROUTER_API_KEY` | — | required |
-| `OPENROUTER_MODEL` | `openrouter/free` | the model that writes the code |
+| `OPENROUTER_MODEL` | two free models, then `openrouter/free` | the model that writes the code; several names = first choice and fallbacks |
 | `AI_REPAIR_GITHUB_REPO`, `AI_REPAIR_GITHUB_TOKEN` | — | required |
 | `AI_REPAIR_PUSH_BRANCH` | `main` | where finished work is pushed |
 | `AI_REPAIR_DRY_RUN` | `true` | `true`: everything except the push. Set `false` to publish |
@@ -270,7 +296,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 
 ## Tests
 
-`make test-ai-repair` (107 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
+`make test-ai-repair` (109 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
 end-to-end tests of the service use a copy of this repository as a local Git remote, the
 real sandbox and the real adapter tests; only the model is replaced by scripted answers.
 No test calls OpenRouter or GitHub.
