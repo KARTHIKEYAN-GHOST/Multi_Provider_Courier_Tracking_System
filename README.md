@@ -6,6 +6,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/contracts.md](docs/contracts.md) — the messages between Engine and workers
 - [docs/milestone-1.md](docs/milestone-1.md) — Milestone 1 plan and acceptance criteria
 - [docs/phase-6.md](docs/phase-6.md) — credentials, the DHL and demo-site adapters, rate limiting
+- [docs/phase-7.md](docs/phase-7.md) — automatic re-polling, status-mapping management, archiving and retention
 
 ## Status
 
@@ -18,6 +19,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 | 4 — Adapter SDK and dummy adapter (worker runtime, concurrency, fault injection) | done |
 | 5 — First end-to-end integration (containers, end-to-end suite) | done |
 | 6 — Encrypted credentials and resolve API, DHL adapter, scraping adapter (demo site), provider rate limiting | done |
+| 7 — Automatic re-polling, status-mapping management, archiving and retention | done |
 
 ## Layout
 

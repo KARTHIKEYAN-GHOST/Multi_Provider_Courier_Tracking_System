@@ -16,11 +16,11 @@ use crate::{
     },
     services::{
         api_keys,
-        background::{run_reaper, run_retry_scheduler},
+        background::{run_maintenance_loop, run_poll_scheduler, run_reaper, run_retry_scheduler},
         close_attempt::RetryPolicy,
         credentials::{self, PgSecretStore},
         crypto::MasterKey,
-        worker_tokens,
+        mappings, retention, worker_tokens,
     },
     state::AppState,
     telemetry,
@@ -102,6 +102,50 @@ enum AdminCommand {
         #[arg(long, action = clap::ArgAction::Set)]
         authorized: bool,
     },
+    /// List the raw-status mappings (optionally of one provider)
+    ListStatusMappings {
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// List provider wordings that events carry but no mapping covers, most frequent first
+    ListUnmappedStatuses {
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Map a provider wording to a normalized status and apply it to the stored events
+    SetStatusMapping {
+        #[arg(long)]
+        provider: String,
+        /// The provider's wording, exactly as stored (case-sensitive)
+        #[arg(long)]
+        raw_status: String,
+        /// CREATED, PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, RETURNED, EXCEPTION or UNKNOWN
+        #[arg(long)]
+        status: String,
+    },
+    /// Remove a mapping; stored events with that wording become UNKNOWN again
+    RemoveStatusMapping {
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        raw_status: String,
+    },
+    /// Set how a provider's shipments are re-polled. --interval-ms 0 switches polling off.
+    SetPollPolicy {
+        #[arg(long)]
+        provider: String,
+        /// Time until the next lookup, in milliseconds
+        #[arg(long)]
+        interval_ms: i32,
+        /// Upper limit of the interval while nothing changes (default: same as --interval-ms)
+        #[arg(long)]
+        max_interval_ms: Option<i32>,
+        /// Stop polling a shipment that showed nothing new for this many days
+        #[arg(long)]
+        give_up_days: Option<i32>,
+    },
+    /// Run archiving and retention once, now, and print what was done
+    RunMaintenance,
 }
 
 /// The credential store, if a master key is configured.
@@ -182,6 +226,17 @@ async fn serve(pool: PgPool, config: Config) -> anyhow::Result<()> {
         pool.clone(),
         Duration::from_millis(config.reaper_interval_ms),
         policy,
+        shutdown.clone(),
+    ));
+    background.spawn(run_poll_scheduler(
+        pool.clone(),
+        Duration::from_millis(config.poll_scheduler_interval_ms),
+        shutdown.clone(),
+    ));
+    background.spawn(run_maintenance_loop(
+        pool.clone(),
+        Duration::from_millis(config.maintenance_interval_ms),
+        config.retention(),
         shutdown.clone(),
     ));
 
@@ -390,6 +445,134 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
             .await?;
             tx.commit().await?;
             println!("scraping_authorized = {authorized} for {provider}");
+        }
+        AdminCommand::ListStatusMappings { provider } => {
+            for m in mappings::list_mappings(pool, provider.as_deref()).await? {
+                println!(
+                    "{:<12} {:<32} -> {:<17} {:<8} {}",
+                    m.provider_code,
+                    m.raw_status,
+                    format!("{:?}", m.normalized_status),
+                    m.source,
+                    m.updated_at.format("%Y-%m-%d")
+                );
+            }
+        }
+        AdminCommand::ListUnmappedStatuses { provider } => {
+            let unmapped = mappings::list_unmapped(pool, provider.as_deref()).await?;
+            if unmapped.is_empty() {
+                println!("every status seen so far has a mapping");
+            }
+            for u in unmapped {
+                // Provider text is shown as data: control characters removed, length bounded.
+                let sample: String = u
+                    .sample_description
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(80)
+                    .collect();
+                println!(
+                    "{:<12} {:?}  events: {}  shipments: {}  last seen: {}  e.g. {:?}",
+                    u.provider_code,
+                    u.raw_status,
+                    u.events,
+                    u.shipments,
+                    u.last_seen_at.format("%Y-%m-%d"),
+                    sample
+                );
+            }
+        }
+        AdminCommand::SetStatusMapping {
+            provider,
+            raw_status,
+            status,
+        } => {
+            let normalized: crate::domain::ShipmentStatus =
+                serde_json::from_value(serde_json::Value::String(status.to_uppercase()))
+                    .map_err(|_| anyhow::anyhow!("unknown status; see --help for the list"))?;
+            let applied =
+                mappings::set_mapping(pool, &provider, &raw_status, normalized, "manual").await?;
+            println!(
+                "mapping stored; events updated: {}, shipments whose status changed: {}",
+                applied.events_updated, applied.shipments_changed
+            );
+        }
+        AdminCommand::RemoveStatusMapping {
+            provider,
+            raw_status,
+        } => match mappings::remove_mapping(pool, &provider, &raw_status).await? {
+            Some(applied) => println!(
+                "mapping removed; events updated: {}, shipments whose status changed: {}",
+                applied.events_updated, applied.shipments_changed
+            ),
+            None => bail!("no such mapping"),
+        },
+        AdminCommand::SetPollPolicy {
+            provider,
+            interval_ms,
+            max_interval_ms,
+            give_up_days,
+        } => {
+            let max_interval_ms = max_interval_ms.unwrap_or(interval_ms);
+            if interval_ms < 0 || max_interval_ms < interval_ms {
+                bail!("--interval-ms must not be negative and --max-interval-ms not below it");
+            }
+            if give_up_days.is_some_and(|d| d < 1) {
+                bail!("--give-up-days must be at least 1");
+            }
+            let mut tx = pool.begin().await?;
+            let Some(provider_id) = sqlx::query_scalar::<_, uuid::Uuid>(
+                "UPDATE providers SET poll_interval_ms = $2, poll_max_interval_ms = $3,
+                        poll_give_up_days = COALESCE($4, poll_give_up_days), updated_at = now()
+                 WHERE code = $1 RETURNING id",
+            )
+            .bind(&provider)
+            .bind(interval_ms)
+            .bind(max_interval_ms)
+            .bind(give_up_days)
+            .fetch_optional(&mut *tx)
+            .await?
+            else {
+                bail!("no provider with this code");
+            };
+            // Shipments already being tracked pick the new policy up now, not after their
+            // next (possibly distant, possibly never scheduled) lookup.
+            let shipments: Vec<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT id FROM shipments
+                 WHERE provider_id = $1 AND archived_at IS NULL
+                   AND current_status NOT IN ('DELIVERED', 'RETURNED')
+                 ORDER BY id FOR UPDATE",
+            )
+            .bind(provider_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            for shipment_id in &shipments {
+                crate::services::polling::schedule_next_poll(&mut tx, *shipment_id).await?;
+            }
+            credentials::audit(
+                &mut tx,
+                credentials::Audit {
+                    actor_type: "admin",
+                    action: "provider.poll_policy",
+                    provider_id: Some(provider_id),
+                    details: Some(serde_json::json!({
+                        "interval_ms": interval_ms, "max_interval_ms": max_interval_ms,
+                        "give_up_days": give_up_days, "shipments_rescheduled": shipments.len(),
+                    })),
+                    ..credentials::Audit::default()
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            println!(
+                "poll policy stored; open shipments rescheduled: {}",
+                shipments.len()
+            );
+        }
+        AdminCommand::RunMaintenance => {
+            let report = retention::run_maintenance(pool, &config.retention()).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         AdminCommand::RevokeApiKey { prefix } => {
             if db::api_keys::revoke_by_prefix(pool, &prefix).await? {

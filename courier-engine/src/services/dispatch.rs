@@ -110,7 +110,7 @@ async fn try_create(
     // 3. Job: only for a new subscription, only if the shipment can still change,
     //    and only if no job is already active for the shipment.
     let job_id = if created && !shipment.current_status.is_terminal() {
-        ensure_job(
+        let job_id = ensure_job(
             &mut tx,
             &target,
             shipment.id,
@@ -118,7 +118,11 @@ async fn try_create(
             JobTrigger::Initial,
             input.correlation_id,
         )
-        .await?
+        .await?;
+        // A shipment nobody was subscribed to has stopped being polled; a new subscriber
+        // starts it again even when a lookup is already running.
+        super::polling::schedule_next_poll_if_unset(&mut tx, shipment.id).await?;
+        job_id
     } else {
         None
     };
@@ -202,7 +206,11 @@ pub async fn refresh(
 
 /// Creates a QUEUED job, its first attempt, and the `job.track` outbox message — or nothing
 /// at all if the shipment already has a non-terminal job. Returns the new job's ID.
-async fn ensure_job(
+///
+/// Used by the first request, a manual refresh and the polling scheduler alike; the caller
+/// holds the shipment row lock. Creating a job also schedules the shipment's next automatic
+/// lookup, so the polling cadence is counted from the most recent lookup of any kind.
+pub(crate) async fn ensure_job(
     conn: &mut PgConnection,
     target: &DispatchTarget,
     shipment_id: Uuid,
@@ -246,6 +254,7 @@ async fn ensure_job(
         now,
     )
     .await?;
+    super::polling::schedule_next_poll(conn, shipment_id).await?;
     Ok(Some(job.id))
 }
 

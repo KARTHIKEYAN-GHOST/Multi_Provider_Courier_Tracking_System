@@ -208,6 +208,8 @@ pub struct RequestRow {
     pub reference: Option<String>,
     pub shipment_status: ShipmentStatus,
     pub last_event_at: Option<DateTime<Utc>>,
+    pub next_poll_at: Option<DateTime<Utc>>,
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub job_id: Option<Uuid>,
     pub job_status: Option<ExecutionStatus>,
@@ -224,7 +226,8 @@ pub struct RequestRow {
 macro_rules! request_select {
     () => {
         "SELECT r.id, p.code AS provider_code, s.tracking_number, r.reference,
-                s.current_status AS shipment_status, s.last_event_at, r.created_at,
+                s.current_status AS shipment_status, s.last_event_at, s.next_poll_at, s.archived_at,
+                r.created_at,
                 j.id AS job_id, j.status AS job_status, j.attempt AS job_attempt,
                 j.max_attempts AS job_max_attempts, j.trigger AS job_trigger, j.outcome AS job_outcome,
                 j.last_error_class AS job_last_error_class, j.execution_count AS job_execution_count,

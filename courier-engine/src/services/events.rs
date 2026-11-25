@@ -337,10 +337,11 @@ async fn store_answer(
         raw_response_id = Some(id);
     }
 
+    let mut new_events = 0;
     for event in &p.events {
         // The provider's wording is kept as-is; the normalized status comes from the
         // Engine's own mapping table. An unmapped status is stored as UNKNOWN, never guessed.
-        sqlx::query(
+        new_events += sqlx::query(
             "INSERT INTO tracking_events
                  (id, shipment_id, raw_response_id, raw_status, raw_description, normalized_status,
                   occurred_at, location, dedupe_key)
@@ -360,23 +361,59 @@ async fn store_answer(
         .bind(&event.location)
         .bind(dedupe_key(event))
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected();
     }
 
-    // The shipment status is that of the most recent event with a known status. This is the
-    // only place it changes: a refresh of a DELIVERED shipment leaves it DELIVERED until a
-    // new result is processed here.
+    // The shipment status is recomputed from the event history, here and (when a mapping
+    // changes) in `services::mappings` — nowhere else. A refresh of a DELIVERED shipment
+    // leaves it DELIVERED until a new result is processed here.
+    recompute_shipment_status(conn, shipment_id).await?;
+
+    // Polling back-off: a lookup that brought something new resets it and brings the next
+    // lookup forward; one that brought nothing lengthens the interval for the lookup after
+    // the one already scheduled.
     sqlx::query(
-        "UPDATE shipments s SET
-             current_status = COALESCE(latest.normalized_status, s.current_status),
+        "UPDATE shipments SET
+             poll_count = poll_count + 1,
+             polls_without_change = CASE WHEN $2 THEN 0 ELSE polls_without_change + 1 END,
+             last_change_at = CASE WHEN $2 THEN clock_timestamp() ELSE last_change_at END
+         WHERE id = $1",
+    )
+    .bind(shipment_id)
+    .bind(new_events > 0)
+    .execute(&mut *conn)
+    .await?;
+    if new_events > 0 {
+        super::polling::schedule_next_poll(conn, shipment_id).await?;
+    }
+    Ok(())
+}
+
+/// Sets a shipment's status to that of its most recent event with a known status, and
+/// `terminal_at` accordingly. A shipment that became DELIVERED or RETURNED is no longer
+/// scheduled for polling. Returns whether the status changed. The caller holds the
+/// shipment row lock.
+pub async fn recompute_shipment_status(
+    conn: &mut PgConnection,
+    shipment_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        "WITH old AS (SELECT current_status FROM shipments WHERE id = $1)
+         UPDATE shipments s SET
+             current_status = COALESCE(latest.normalized_status, 'UNKNOWN'),
              last_event_at = COALESCE(newest.occurred_at, s.last_event_at),
              terminal_at = CASE
-                 WHEN COALESCE(latest.normalized_status, s.current_status) IN ('DELIVERED', 'RETURNED')
+                 WHEN COALESCE(latest.normalized_status, 'UNKNOWN') IN ('DELIVERED', 'RETURNED')
                      THEN COALESCE(s.terminal_at, clock_timestamp())
                  END,
-             poll_count = s.poll_count + 1,
+             next_poll_at = CASE
+                 WHEN COALESCE(latest.normalized_status, 'UNKNOWN') IN ('DELIVERED', 'RETURNED')
+                     THEN NULL
+                 ELSE s.next_poll_at
+                 END,
              updated_at = clock_timestamp()
-         FROM (SELECT 1) one
+         FROM old
          LEFT JOIN LATERAL (
              SELECT e.normalized_status FROM tracking_events e
              WHERE e.shipment_id = $1 AND e.normalized_status <> 'UNKNOWN'
@@ -385,12 +422,12 @@ async fn store_answer(
          LEFT JOIN LATERAL (
              SELECT max(e.occurred_at) AS occurred_at FROM tracking_events e WHERE e.shipment_id = $1
          ) newest ON true
-         WHERE s.id = $1",
+         WHERE s.id = $1
+         RETURNING s.current_status IS DISTINCT FROM old.current_status",
     )
     .bind(shipment_id)
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
+    .fetch_one(conn)
+    .await
 }
 
 /// Identifies an event within a shipment, so the same event reported by a later lookup is

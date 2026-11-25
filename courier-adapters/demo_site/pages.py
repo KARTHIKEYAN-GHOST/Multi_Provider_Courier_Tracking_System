@@ -3,12 +3,13 @@
 A deliberately ordinary tracking page: a status headline and a history table with local
 (IST) times, the way many courier sites present it. The prefix of the tracking number
 selects what the site does, so the scraping adapter can be exercised against every case
-a real site produces - including a redesigned page.
+a real site produces - including a redesigned page and a parcel that moves between visits.
 """
 
 from __future__ import annotations
 
 import hashlib
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -21,6 +22,20 @@ _STEPS = [
     ("Out for delivery", "Coimbatore, IN", "With delivery agent"),
     ("Delivered", "Coimbatore, IN", "Delivered to consignee"),
 ]
+
+
+# How often each DEMO-PROGRESS number has been looked at (the only state the site keeps).
+_visits: dict[str, int] = {}
+_visits_lock = threading.Lock()
+
+
+def _progress(number: str) -> int:
+    """A parcel that moves: one more step of its journey on every visit, until delivered."""
+    with _visits_lock:
+        if len(_visits) > 10_000:
+            _visits.clear()
+        _visits[number] = min(_visits.get(number, 0) + 1, len(_STEPS))
+        return _visits[number]
 
 
 @dataclass(frozen=True)
@@ -83,6 +98,8 @@ def render(number: str) -> Page:
         return Page(200, _tracking_page(number, 5))
     if kind == "TRANSIT":
         return Page(200, _tracking_page(number, 3))
+    if kind == "PROGRESS":
+        return Page(200, _tracking_page(number, _progress(number)))
     if kind == "BOOKED":
         return Page(200, _tracking_page(number, 1))
     if kind == "BUSY":

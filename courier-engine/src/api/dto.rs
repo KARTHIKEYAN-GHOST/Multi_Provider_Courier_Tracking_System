@@ -65,6 +65,12 @@ pub struct TrackingRequestView {
     /// Normalized shipment status — where the parcel is.
     pub shipment_status: ShipmentStatus,
     pub last_event_at: Option<DateTime<Utc>>,
+    /// When the Engine will look the shipment up again by itself; null when it will not
+    /// (finished, archived, or the provider is not polled).
+    pub next_check_at: Option<DateTime<Utc>>,
+    /// Set when this shipment is a closed generation of its tracking number: it no longer
+    /// changes, and a new request for the same number starts a new shipment.
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// The shipment's most recent lookup job — how the lookup is going.
     pub latest_job: Option<JobView>,
@@ -109,6 +115,8 @@ impl From<RequestRow> for TrackingRequestView {
             reference: r.reference,
             shipment_status: r.shipment_status,
             last_event_at: r.last_event_at,
+            next_check_at: r.next_poll_at,
+            archived_at: r.archived_at,
             created_at: r.created_at,
             latest_job,
         }

@@ -168,6 +168,15 @@ async def test_every_site_behaviour_is_classified(site: str, number: str, error:
         assert raised.value.retry_after_ms == 2000  # type: ignore[attr-defined]
 
 
+async def test_a_moving_parcel_shows_one_more_step_on_every_visit(site: str) -> None:
+    """What the Engine's polling relies on in the end-to-end tests."""
+    seen = [(await track(site, "DEMO-PROGRESS-9"))[0] for _ in range(6)]
+    assert [len(statuses) for statuses in seen] == [1, 2, 3, 4, 5, 5]
+    assert seen[0] == ["Booked"]
+    assert seen[-1][-1] == "Delivered"
+    assert seen[3][:3] == seen[2], "earlier events stay exactly as they were"
+
+
 async def test_an_unreachable_site_surfaces_as_a_network_error_for_the_sdk_to_classify() -> None:
     with pytest.raises(httpx.ConnectError):
         await track("http://127.0.0.1:1", "DEMO-OK-1")

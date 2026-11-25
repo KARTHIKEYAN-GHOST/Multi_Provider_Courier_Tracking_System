@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl smoke test-e2e master-key run-demo-site
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl smoke test-e2e master-key run-demo-site maintenance unmapped
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -38,6 +38,12 @@ up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY an
 
 master-key: ## Print a new random master key for CREDENTIAL_MASTER_KEY (shown once; nothing is stored)
 	@cd courier-engine && cargo run --quiet -- admin generate-master-key
+
+maintenance: env ## Run archiving and retention once, now (the Engine also does this periodically)
+	cd courier-engine && cargo run --quiet -- admin run-maintenance
+
+unmapped: env ## List provider statuses that have no mapping yet
+	cd courier-engine && cargo run --quiet -- admin list-unmapped-statuses
 
 run-demo-site: ## Run the demo courier website on http://127.0.0.1:8090 (target of the demo-site adapter)
 	cd courier-adapters && uv run python -m demo_site

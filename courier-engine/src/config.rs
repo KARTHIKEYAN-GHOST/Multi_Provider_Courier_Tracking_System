@@ -32,6 +32,21 @@ pub struct Config {
     pub retry_scheduler_interval_ms: u64,
     #[serde(default = "default_reaper_interval_ms")]
     pub reaper_interval_ms: u64,
+    /// How often the polling scheduler looks for shipments whose next lookup is due.
+    #[serde(default = "default_poll_scheduler_interval_ms")]
+    pub poll_scheduler_interval_ms: u64,
+    /// How often archiving and retention run.
+    #[serde(default = "default_maintenance_interval_ms")]
+    pub maintenance_interval_ms: u64,
+    /// Days between archiving a shipment and deleting its events and raw responses. 0 = never.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: i32,
+    /// Days a sent outbox message is kept. 0 = forever.
+    #[serde(default = "default_outbox_retention_days")]
+    pub outbox_retention_days: i32,
+    /// Days an inbox (dedupe) row is kept. 0 = forever.
+    #[serde(default = "default_inbox_retention_days")]
+    pub inbox_retention_days: i32,
     /// How many times a job is retried after its message was dead-lettered.
     #[serde(default = "default_max_dead_letter_retries")]
     pub max_dead_letter_retries: i32,
@@ -76,6 +91,21 @@ fn default_scheduler_interval_ms() -> u64 {
 fn default_reaper_interval_ms() -> u64 {
     1000
 }
+fn default_poll_scheduler_interval_ms() -> u64 {
+    1000
+}
+fn default_maintenance_interval_ms() -> u64 {
+    300_000
+}
+fn default_retention_days() -> i32 {
+    180
+}
+fn default_outbox_retention_days() -> i32 {
+    7
+}
+fn default_inbox_retention_days() -> i32 {
+    30
+}
 fn default_max_dead_letter_retries() -> i32 {
     1
 }
@@ -115,6 +145,14 @@ impl std::fmt::Debug for Config {
                 &self.retry_scheduler_interval_ms,
             )
             .field("reaper_interval_ms", &self.reaper_interval_ms)
+            .field(
+                "poll_scheduler_interval_ms",
+                &self.poll_scheduler_interval_ms,
+            )
+            .field("maintenance_interval_ms", &self.maintenance_interval_ms)
+            .field("retention_days", &self.retention_days)
+            .field("outbox_retention_days", &self.outbox_retention_days)
+            .field("inbox_retention_days", &self.inbox_retention_days)
             .field("max_dead_letter_retries", &self.max_dead_letter_retries)
             .field("engine_topology_prefix", &self.engine_topology_prefix)
             .field("engine_internal_addr", &self.engine_internal_addr)
@@ -129,6 +167,15 @@ impl std::fmt::Debug for Config {
 }
 
 impl Config {
+    pub fn retention(&self) -> crate::services::retention::RetentionSettings {
+        crate::services::retention::RetentionSettings {
+            retention_days: self.retention_days,
+            outbox_retention_days: self.outbox_retention_days,
+            inbox_retention_days: self.inbox_retention_days,
+            batch: 500,
+        }
+    }
+
     pub fn from_env() -> anyhow::Result<Self> {
         // Looks in the current directory and its parents; a missing file is not an error.
         let _ = dotenvy::dotenv();
@@ -149,6 +196,11 @@ impl Config {
             event_prefetch: default_event_prefetch(),
             retry_scheduler_interval_ms: default_scheduler_interval_ms(),
             reaper_interval_ms: default_reaper_interval_ms(),
+            poll_scheduler_interval_ms: default_poll_scheduler_interval_ms(),
+            maintenance_interval_ms: default_maintenance_interval_ms(),
+            retention_days: default_retention_days(),
+            outbox_retention_days: default_outbox_retention_days(),
+            inbox_retention_days: default_inbox_retention_days(),
             max_dead_letter_retries: default_max_dead_letter_retries(),
             engine_topology_prefix: String::new(),
             engine_internal_addr: None,

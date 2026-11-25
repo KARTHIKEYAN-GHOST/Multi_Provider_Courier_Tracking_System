@@ -44,6 +44,8 @@ PROVIDER_DEFAULTS = {
     "retry_base_ms": 300,
     "retry_max_ms": 3000,
     "min_dispatch_interval_ms": 0,
+    "poll_max_interval_ms": 0,  # before poll_interval_ms: the maximum may not be below it
+    "poll_interval_ms": 0,  # no automatic re-polling unless a test asks for it
 }
 PROVIDERS = ("dummy", "dhl", "demosite")
 TERMINAL = ("COMPLETED", "FAILED")
@@ -170,6 +172,9 @@ class Stack:
             "OUTBOX_POLL_MS": "50",
             "RETRY_SCHEDULER_INTERVAL_MS": "100",
             "REAPER_INTERVAL_MS": "200",
+            "POLL_SCHEDULER_INTERVAL_MS": "100",
+            # Maintenance runs once at start-up and then only when a test calls it.
+            "MAINTENANCE_INTERVAL_MS": "86400000",
         }
         self._engine_env = engine_env
         self.engine_binary = str(ENGINE_DIR / "target" / "debug" / "courier-engine")
@@ -255,9 +260,16 @@ class Stack:
         with psycopg.connect(self.database_url, row_factory=dict_row) as connection:
             return connection.execute(sql, params).fetchall()
 
+    def execute(self, sql: str, *params: Any) -> int:
+        """Changes test data directly (used to move time: ageing a shipment by months)."""
+        with psycopg.connect(self.database_url, autocommit=True) as connection:
+            return connection.execute(sql, params).rowcount
+
     def set_provider(self, code: str = "dummy", **timings: int) -> None:
         assert code in PROVIDERS
         assert set(timings) <= set(PROVIDER_DEFAULTS)
+        if "poll_interval_ms" in timings:
+            timings.setdefault("poll_max_interval_ms", timings["poll_interval_ms"])
         assignments = ", ".join(f"{column} = %s" for column in timings)
         with psycopg.connect(self.database_url, autocommit=True) as connection:
             connection.execute(

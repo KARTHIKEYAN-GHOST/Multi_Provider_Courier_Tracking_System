@@ -46,8 +46,8 @@ def M(name, need, how):  # one method
 # ---------------------------------------------------------------- cover
 S += [Spacer(1, 60 * mm), Paragraph("Courier Tracking System", title), Spacer(1, 6),
       Paragraph("Project guide: what has been built, how it works, and why", sub), Spacer(1, 14),
-      Paragraph("Covers Phases 1 to 6: Rust Engine, PostgreSQL, RabbitMQ, Python Adapter SDK,<br/>dummy, DHL and demo-site adapters, credentials, tests and containers", sub),
-      Spacer(1, 30 * mm), Paragraph("State of the repository after Phase 6, 24 November 2026", sub)]
+      Paragraph("Covers Phases 1 to 7: Rust Engine, PostgreSQL, RabbitMQ, Python Adapter SDK,<br/>dummy, DHL and demo-site adapters, credentials, polling, retention, tests and containers", sub),
+      Spacer(1, 30 * mm), Paragraph("State of the repository after Phase 7, 25 November 2026", sub)]
 
 # ---------------------------------------------------------------- 1
 H1("1. What this project is")
@@ -72,9 +72,7 @@ T(["Phase", "Delivered", "Commit"], [
   ["4", "Python Adapter SDK (worker runtime) and the dummy adapter", "689606b"],
   ["5", "End-to-end test suite, Dockerfiles, full Compose stack, contracts documentation", "cd28ea1"]], [14, 128, 24])
 H2("What is deliberately not built yet")
-B("Real courier adapters, provider credentials and the secrets API, rate limiting (Phase 6)",
-  "Automatic re-polling of shipments, archiving and retention (Phase 7)",
-  "Redis, sessions, OTP / CAPTCHA workflow and the human interface (Phase 8)",
+B("Redis, sessions, OTP / CAPTCHA workflow and the human interface (Phase 8)",
   "AI diagnosis and sandboxed AI repair (Phases 9 and 10)",
   "Metrics, circuit breaker, production deployment (Phases 11 and 12)")
 
@@ -449,9 +447,45 @@ cargo run -- admin set-scraping-authorized --provider X --authorized true
 P("Losing the master key makes the stored credentials unreadable: back it up separately from the database.")
 
 # ---------------------------------------------------------------- 12
-H1("12. Current state, open points and what comes next")
+H1("12. Phase 7: re-polling, status mappings, archiving")
+P("Until Phase 7 a shipment was looked up once, an unknown courier wording stayed unknown for ever, and the database only grew. "
+  "Phase 7 fixes those three things. No message changed and the adapters were not touched. Full details are in docs/phase-7.md.")
+H2("Automatic re-polling")
+B("The Engine looks a shipment up again and again until it is DELIVERED or RETURNED. A poll is an ordinary job (trigger poll), so retries, timers, rate limits and credentials all apply.",
+  "Each provider has a policy: poll_interval_ms (0 = never polled), poll_max_interval_ms and poll_give_up_days. DHL: every 30 minutes, slowing down to every 6 hours.",
+  "While nothing new appears the interval doubles up to the maximum; a new event resets it.",
+  "Polling stops when the shipment is finished, when nobody is subscribed any more, or after poll_give_up_days without news. It pauses while the provider is unavailable.",
+  "The API shows the next lookup as next_check_at.")
+H2("Status-mapping management")
+B("admin list-unmapped-statuses shows courier wordings that have no mapping, most frequent first.",
+  "admin set-status-mapping maps a wording. The change is also applied to the past: stored events are re-normalized and every affected shipment's status is recomputed, in one transaction.",
+  "Every change is written to the audit log with the value it replaced.")
+H2("Archiving and retention")
+B("Archive: a shipment is closed 90 days (reuse_window_days) after it finished, or after 90 days without subscriber and news. The same tracking number then starts a new shipment.",
+  "Purge: RETENTION_DAYS (180) after archiving, its events and raw responses are deleted. The shipment, its jobs and the users' requests stay. This cannot be undone; 0 switches it off.",
+  "Messages: sent outbox rows are deleted after 7 days, dedupe (inbox) rows after 30.",
+  "Runs every 5 minutes and on demand: make maintenance.")
+H2("Important functions")
+M("polling::poll_due (services/polling.rs)",
+  "Something must start the next lookup of every open shipment, exactly once, even with several Engine instances.",
+  "Locks shipments whose next_poll_at has passed (FOR UPDATE SKIP LOCKED) and, in the same transaction, creates their jobs with the same ensure_job the API uses. Shipments that are finished, unwatched or stale are taken off the schedule instead.")
+M("polling::schedule_next_poll",
+  "One place decides when a shipment is looked up next.",
+  "next_poll_at = now + min(maximum, base interval x 2^(lookups without news)); cleared for finished or archived shipments and for providers without a policy. Called whenever a job is created and whenever a result brings news.")
+M("events::recompute_shipment_status",
+  "The shipment status must always follow from its event history, whether a result arrives or a mapping changes.",
+  "Sets the status to that of the newest event with a known status, sets or clears terminal_at, and takes a finished shipment off the polling schedule. Reports whether the status changed.")
+M("mappings::set_mapping / remove_mapping / list_unmapped (services/mappings.rs)",
+  "Operators must be able to teach the system a courier's wording without losing or falsifying history.",
+  "Stores the mapping, locks the affected shipments in a fixed order, rewrites the normalized status of matching events, recomputes each shipment, reschedules polling where needed and writes an audit row - all or nothing.")
+M("retention::archive_due / purge_due / clean_messages / run_maintenance (services/retention.rs)",
+  "Couriers reuse tracking numbers, and old data must not accumulate for ever.",
+  "Each step selects a bounded batch of due rows, skipping rows another instance holds, and repeats until nothing is left. A shipment with a running lookup is never archived.")
+
+# ---------------------------------------------------------------- 13
+H1("13. Current state, open points and what comes next")
 H2("Verified")
-B("476 automated tests pass: 79 contract, 145 Engine, 213 adapter, 39 end-to-end.",
+B("500 automated tests pass: 79 contract, 163 Engine, 214 adapter, 44 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
@@ -462,12 +496,12 @@ B("The Docker images and the full container stack (make up, make smoke) had not 
 H2("Open decisions and leftovers")
 B("The dummy courier is created by migration 0008 in every database. Since Phase 6 the ENABLE_DUMMY_PROVIDER setting can switch it off.",
   "Test leftovers in the development PostgreSQL: a few smoke-test users and shipments in database courier, the database courier_e2e (recreated by every end-to-end run) and one old _sqlx_test_... database. None affect the system.",
-  "adapter_versions is not filled yet; sent outbox rows are never cleaned up; there is no minimum interval between manual refreshes.",
+  "adapter_versions is not filled yet; there is no minimum interval between manual refreshes; status mappings are managed by command line only.",
   "The \"job in step with a crashing job\" limitation described in chapter 4.")
 H2("Roadmap")
 T(["Phase", "Deliverable"], [
   ["6 (done)", "Encrypted credential storage and an internal resolve API, the DHL adapter, a scraping adapter against a local demo site, per-provider rate limiting"],
-  ["7", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
+  ["7 (done)", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
   ["8", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
   ["9", "AI service: failure diagnosis and status interpretation (advisory only, no tools, validated output)"],
   ["10", "Sandboxed AI adapter repair that ends in a pull request; a human merges"],
