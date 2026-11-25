@@ -646,7 +646,7 @@ B("The tests are written by the same model as the code. An adapter can pass them
 # ---------------------------------------------------------------- 16
 H1("16. Current state, open points and what comes next")
 H2("Verified")
-B("922 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 102 AI repair service, 57 end-to-end.",
+B("925 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 105 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")

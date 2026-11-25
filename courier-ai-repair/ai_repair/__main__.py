@@ -61,6 +61,8 @@ def main() -> int:
         settings.openrouter_base_url,
         settings.ai_repair_llm_timeout_s,
         settings.ai_repair_max_output_tokens,
+        retries=settings.ai_repair_llm_retries,
+        retry_wait_s=settings.ai_repair_llm_retry_wait_s,
     )
     engine = EngineClient(settings.ai_repair_engine_url, settings.engine_repair_token.get_secret_value())
     repairer = Repairer(settings, model, sandbox)

@@ -20,8 +20,14 @@ class Settings(BaseSettings):
     engine_repair_token: SecretStr = SecretStr("")
 
     openrouter_api_key: SecretStr = SecretStr("")
-    #: An OpenRouter model name, e.g. the one shown on the model's page at openrouter.ai/models.
-    openrouter_model: str = ""
+    #: An OpenRouter model name as shown at openrouter.ai/models. The default is OpenRouter's
+    #: own router over the models that cost nothing at the moment: fine for trying the
+    #: service out, but which model answers changes from call to call.
+    openrouter_model: str = "openrouter/free"
+    #: How often a call is repeated when OpenRouter says "too many requests" (free models
+    #: say it often), and how long to wait in between.
+    ai_repair_llm_retries: int = Field(default=3, ge=0, le=10)
+    ai_repair_llm_retry_wait_s: float = Field(default=30.0, ge=0, le=600)
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     ai_repair_llm_timeout_s: float = Field(default=240.0, ge=10, le=900)
     ai_repair_max_output_tokens: int = Field(default=16000, ge=1000, le=64000)
@@ -58,7 +64,6 @@ class Settings(BaseSettings):
         needed = {
             "ENGINE_REPAIR_TOKEN": self.engine_repair_token.get_secret_value(),
             "OPENROUTER_API_KEY": self.openrouter_api_key.get_secret_value(),
-            "OPENROUTER_MODEL": self.openrouter_model,
             "AI_REPAIR_GITHUB_REPO": self.ai_repair_github_repo or self.ai_repair_repo_url,
         }
         if not self.ai_repair_repo_url and not self.ai_repair_dry_run:

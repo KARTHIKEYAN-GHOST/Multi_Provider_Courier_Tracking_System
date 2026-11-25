@@ -166,13 +166,27 @@ repair routes refuse everybody.
 
 1. Create an account at <https://openrouter.ai> and add credit (Settings → Credits).
 2. Create a key at <https://openrouter.ai/keys>. Give it a spending limit.
-3. Choose a model at <https://openrouter.ai/models> — a strong coding model with a large
-   context window — and copy its name exactly as shown there.
+3. Optionally choose a model at <https://openrouter.ai/models> and copy its name exactly as
+   shown there.
 
 ```
 OPENROUTER_API_KEY=sk-or-v1-…
-OPENROUTER_MODEL=<the model's name>
+OPENROUTER_MODEL=<the model's name>      # optional
 ```
+
+**Free models.** Without `OPENROUTER_MODEL` the service uses `openrouter/free`, OpenRouter's
+router over the models that cost nothing at the moment. That is enough to try the service
+out, with three things to know:
+
+- Which model answers changes from call to call, and free models are weaker at writing
+  code. Expect more tasks to end as "no acceptable proposal after 3 rounds". Nothing is
+  published in that case. For real use, name a strong coding model.
+- Free models are rate-limited per day and per minute. The service waits and repeats a
+  call that was refused for that reason (`AI_REPAIR_LLM_RETRIES`, default 3, 30 seconds
+  apart).
+- Providers of free models may keep and train on what is sent to them, and OpenRouter
+  offers them only if the account's privacy settings allow that. What is sent here is
+  adapter source code and scrubbed courier answers.
 
 ### 3. GitHub token
 
@@ -243,7 +257,8 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 | Variable | Default | Meaning |
 |---|---|---|
 | `ENGINE_REPAIR_TOKEN` | — | shared by Engine and service; at least 32 characters |
-| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | — | required |
+| `OPENROUTER_API_KEY` | — | required |
+| `OPENROUTER_MODEL` | `openrouter/free` | the model that writes the code |
 | `AI_REPAIR_GITHUB_REPO`, `AI_REPAIR_GITHUB_TOKEN` | — | required |
 | `AI_REPAIR_PUSH_BRANCH` | `main` | where finished work is pushed |
 | `AI_REPAIR_DRY_RUN` | `false` | everything except the push |
@@ -254,7 +269,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 
 ## Tests
 
-`make test-ai-repair` (102 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
+`make test-ai-repair` (105 tests) and `courier-engine/tests/repairs.rs` (8 tests). The
 end-to-end tests of the service use a copy of this repository as a local Git remote, the
 real sandbox and the real adapter tests; only the model is replaced by scripted answers.
 No test calls OpenRouter or GitHub.

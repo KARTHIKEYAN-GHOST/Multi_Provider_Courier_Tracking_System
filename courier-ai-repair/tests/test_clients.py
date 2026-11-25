@@ -85,7 +85,7 @@ def test_the_model_is_asked_through_openrouter_and_nothing_about_the_installatio
     [
         (401, {}, "refused the API key"),
         (402, {}, "no credit"),
-        (404, {}, "does not know the model"),
+        (404, {}, "no usable provider"),
         (429, {}, "rate limit"),
         (500, {}, "HTTP 500"),
         (200, {"choices": []}, "no message"),
@@ -96,17 +96,62 @@ def test_openrouter_problems_are_named_without_the_key(
     status: int, body: dict[str, object], text: str
 ) -> None:
     model = OpenRouterModel(
-        API_KEY, "m", transport=httpx.MockTransport(lambda r: httpx.Response(status, json=body))
+        API_KEY,
+        "m",
+        transport=httpx.MockTransport(lambda r: httpx.Response(status, json=body)),
+        retry_wait_s=0,
     )
     with pytest.raises(ModelError, match=text) as raised:
         model.complete("s", [])
     assert API_KEY not in str(raised.value)
 
 
+def test_a_model_that_cannot_be_told_to_answer_in_json_is_asked_again_without_that() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if "response_format" in bodies[-1]:
+            return httpx.Response(404, json={"error": {"message": "No endpoints found that support JSON"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    model = OpenRouterModel(API_KEY, "vendor/small:free", transport=httpx.MockTransport(handler))
+    assert model.complete("s", []) == "{}"
+    assert ["response_format" in body for body in bodies] == [True, False]
+
+
+def test_a_busy_free_model_is_asked_again_a_few_times() -> None:
+    answers = [httpx.Response(429), httpx.Response(429), httpx.Response(200, json={"choices": [
+        {"message": {"content": "{}"}}]})]  # fmt: skip
+    calls = iter(answers)
+    model = OpenRouterModel(
+        API_KEY, "m", transport=httpx.MockTransport(lambda r: next(calls)), retries=3, retry_wait_s=0
+    )
+    assert model.complete("s", []) == "{}"
+    assert next(calls, None) is None
+
+
+def test_the_free_router_is_the_model_when_none_is_named() -> None:
+    from ai_repair.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.openrouter_model == "openrouter/free"
+    assert "OPENROUTER_MODEL" not in settings.missing()
+
+
 def test_the_models_answer_is_read_strictly() -> None:
     answer = '```json\n{"summary": "s", "files": [{"path": " a.py ", "content": "x = 1"}]}\n```'
     proposal = parse_proposal(answer)
     assert (proposal.summary, proposal.files[0].path, proposal.files[0].content) == ("s", "a.py", "x = 1\n")
-    for bad in ["sure, here it is", "[]", '{"files": "x"}', '{"files": [{"path": "a"}]}', '{"files": [3]}']:
+    wrapped = parse_proposal('Here you go:\n{"summary": "s", "files": []}\nHope this helps!')
+    assert wrapped.summary == "s"
+    for bad in [
+        "sure, here it is",
+        "[]",
+        "{not json}",
+        '{"files": "x"}',
+        '{"files": [{"path": "a"}]}',
+        '{"files": [3]}',
+    ]:
         with pytest.raises(ModelError):
             parse_proposal(bad)

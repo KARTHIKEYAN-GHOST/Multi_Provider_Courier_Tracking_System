@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -42,9 +43,12 @@ class OpenRouterModel:
         timeout_s: float = 240.0,
         max_tokens: int = 16000,
         transport: httpx.BaseTransport | None = None,
+        retries: int = 3,
+        retry_wait_s: float = 30.0,
     ) -> None:
         self.name = model
         self._max_tokens = max_tokens
+        self._retries, self._retry_wait_s = retries, retry_wait_s
         # No referer or title header: nothing about this installation is sent along.
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -53,24 +57,39 @@ class OpenRouterModel:
             transport=transport,
         )
 
+    def _post(self, body: dict[str, Any]) -> httpx.Response:
+        try:
+            return self._client.post("/chat/completions", json=body)
+        except httpx.HTTPError as error:
+            raise ModelError(f"OpenRouter could not be reached ({type(error).__name__})") from None
+
     def complete(self, system: str, messages: list[dict[str, str]]) -> str:
-        body = {
+        body: dict[str, Any] = {
             "model": self.name,
             "messages": [{"role": "system", "content": system}, *messages],
             "temperature": 0,
             "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }
-        try:
-            response = self._client.post("/chat/completions", json=body)
-        except httpx.HTTPError as error:
-            raise ModelError(f"OpenRouter could not be reached ({type(error).__name__})") from None
+        response = self._post(body)
+        if response.status_code in (400, 404) and "response_format" in body:
+            # Some models cannot be told to answer in JSON. The instructions ask for it anyway.
+            del body["response_format"]
+            response = self._post(body)
+        for _ in range(self._retries):
+            if response.status_code != 429:
+                break
+            time.sleep(self._retry_wait_s)
+            response = self._post(body)
         if response.status_code in (401, 403):
             raise ModelError("OpenRouter refused the API key")
         if response.status_code == 402:
             raise ModelError("the OpenRouter account has no credit left")
         if response.status_code == 404:
-            raise ModelError(f"OpenRouter does not know the model '{self.name}'")
+            raise ModelError(
+                f"OpenRouter has no usable provider for the model '{self.name}' (wrong name, or the "
+                "account's privacy settings exclude it)"
+            )
         if response.status_code == 429:
             raise ModelError("OpenRouter's rate limit was reached")
         if response.status_code != 200:
@@ -79,7 +98,8 @@ class OpenRouterModel:
             data: Any = response.json()
             content = data["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
-            raise ModelError("OpenRouter's answer has no message") from None
+            # A failure of the model behind OpenRouter arrives as HTTP 200 with an error object.
+            raise ModelError("OpenRouter's answer has no message (the model behind it failed)") from None
         if not isinstance(content, str) or not content.strip():
             raise ModelError("the model answered with nothing")
         return content
@@ -97,10 +117,14 @@ def parse_proposal(text: str) -> Proposal:
     fenced = _FENCE.match(text)
     if fenced:
         text = fenced.group(1)
+    # Weaker models wrap the object in a sentence or two; the object itself is what counts.
+    start, end = text.find("{"), text.rfind("}")
     try:
-        data = json.loads(text)
+        data = json.loads(text[start : end + 1]) if 0 <= start < end else None
     except ValueError:
-        raise ModelError("the answer is not JSON") from None
+        data = None
+    if data is None:
+        raise ModelError("the answer is not a JSON object") from None
     files = data.get("files") if isinstance(data, dict) else None
     if not isinstance(files, list):
         raise ModelError('the answer has no "files" list')
