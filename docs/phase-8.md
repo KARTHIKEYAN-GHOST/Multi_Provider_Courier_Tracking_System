@@ -64,6 +64,11 @@ Points that matter:
 
 ### Who is asked
 
+> **Changed in Phase 10.** Every user is a staff member and sees and may answer every open
+> challenge; a user can be restricted to their own with `admin set-staff --staff false`
+> ([phase-10.md](phase-10.md)). What follows describes whom a challenge is assigned to,
+> which is what a restricted user sees.
+
 The challenge is assigned to exactly one user: the one who started the lookup (first request or
 manual refresh) if they are still subscribed; for an automatic poll, the shipment's
 longest-standing subscriber. Everyone else gets 404, as for a challenge that does not exist.

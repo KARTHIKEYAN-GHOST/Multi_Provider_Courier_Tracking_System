@@ -214,6 +214,36 @@ services:
       retries: 20
       start_period: 3s
 
+  # AI repair service with its agent (browser, HTTP client, sandboxed checks). Started only
+  # with the "ai" profile: make up-ai. It gets exactly the settings listed here and nothing
+  # else from .env: no database, broker or Redis password and no master key.
+  ai-repair:
+    profiles: ["ai"]
+    build:
+      context: ..
+      dockerfile: courier-ai-repair/Dockerfile
+    image: courier-ai-repair:local
+    restart: unless-stopped
+    environment:
+      AI_REPAIR_ENGINE_URL: http://engine:8081
+      ENGINE_REPAIR_TOKEN: ${ENGINE_REPAIR_TOKEN:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
+      AI_REPAIR_GITHUB_REPO: ${AI_REPAIR_GITHUB_REPO:-}
+      AI_REPAIR_GITHUB_TOKEN: ${AI_REPAIR_GITHUB_TOKEN:-}
+      AI_REPAIR_DRY_RUN: ${AI_REPAIR_DRY_RUN:-true}
+    # The sandbox for generated code (bubblewrap) and the browser's own sandbox create user
+    # namespaces, which Docker's default system-call filter refuses. The container runs as
+    # an unprivileged user without any capability.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    cap_drop: ["ALL"]
+    depends_on:
+      engine:
+        condition: service_healthy
+
   # DHL adapter (official API). Started only with the "dhl" profile: make up-dhl.
   # It holds no DHL key: it asks the Engine for it per job, identifying itself with its token.
   adapter-dhl:

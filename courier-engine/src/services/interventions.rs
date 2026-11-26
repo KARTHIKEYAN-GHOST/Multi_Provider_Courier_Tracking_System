@@ -237,7 +237,7 @@ async fn set_disposition(
 
 // ----------------------------------------------------------------------------- the user answers
 
-/// A challenge as its assigned user sees it. No job, shipment or session identifiers.
+/// A challenge as its assigned user, or a staff member, sees it. No job, shipment or session identifiers.
 #[derive(Debug, sqlx::FromRow)]
 pub struct InterventionRow {
     pub id: Uuid,
@@ -260,14 +260,15 @@ macro_rules! intervention_select {
                      THEN 'expired' ELSE i.status END AS status,
                 i.response_format, i.image IS NOT NULL AS has_image, i.expires_at, i.created_at,
                 (SELECT r.id FROM tracking_requests r
-                 WHERE r.shipment_id = s.id AND r.user_id = i.assigned_user_id AND r.status = 'active'
+                 WHERE r.shipment_id = s.id AND r.user_id = $1 AND r.status = 'active'
                 ) AS tracking_request_id,
                 p.code AS provider_code, s.tracking_number
          FROM human_interventions i
          JOIN tracking_jobs j ON j.id = i.job_id
          JOIN shipments s ON s.id = j.shipment_id
          JOIN providers p ON p.id = s.provider_id
-         WHERE i.assigned_user_id = $1"
+         WHERE (i.assigned_user_id = $1
+                OR EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.is_staff AND u.status = 'active'))"
     };
 }
 
@@ -393,7 +394,10 @@ pub async fn submit(
     let mut tx = pool.begin().await?;
     // Not the caller's challenge and no such challenge look the same.
     let job_id: Uuid = sqlx::query_scalar(
-        "SELECT job_id FROM human_interventions WHERE id = $1 AND assigned_user_id = $2",
+        "SELECT job_id FROM human_interventions
+         WHERE id = $1
+           AND (assigned_user_id = $2
+                OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.is_staff AND u.status = 'active'))",
     )
     .bind(intervention_id)
     .bind(user_id)
@@ -450,7 +454,7 @@ pub async fn submit(
     let sealed = master.seal(response.as_bytes(), &binding(intervention_id, job_id));
     sqlx::query(
         "UPDATE human_interventions SET
-             status = 'answered', answered_at = clock_timestamp(),
+             status = 'answered', answered_at = clock_timestamp(), answered_by = $7,
              wrapped_key = $2, key_nonce = $3, ciphertext = $4, nonce = $5, key_version = $6
          WHERE id = $1",
     )
@@ -460,6 +464,7 @@ pub async fn submit(
     .bind(&sealed.ciphertext)
     .bind(sealed.nonce.as_slice())
     .bind(sealed.key_version)
+    .bind(user_id)
     .execute(&mut *tx)
     .await?;
 

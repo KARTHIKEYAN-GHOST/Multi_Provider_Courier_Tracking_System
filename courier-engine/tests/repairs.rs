@@ -11,6 +11,7 @@ use courier_engine::{
     services::{
         close_attempt::RetryPolicy,
         events::handle_event,
+        polling::poll_due,
         repairs::{self, Finish, NewProvider, RequestError},
         worker_tokens,
     },
@@ -139,7 +140,12 @@ async fn an_unreadable_answer_is_kept_and_the_third_lookup_opens_a_task(pool: Pg
         ("SCHEMA_DRIFT", "DUMMY-B-0", json!(PAGE))
     );
 
-    // More failures do not pile up tasks, and old samples are dropped.
+    // More failures do not pile up tasks, and old samples are dropped. (A task that has been
+    // open for longer than the pause no longer holds lookups back.)
+    sqlx::query("UPDATE repair_tasks SET created_at = created_at - interval '7 hours'")
+        .execute(&pool)
+        .await
+        .unwrap();
     drift(&pool, "DUMMY-C", "0.1.0", 12).await;
     assert_eq!(tasks(&pool).await.len(), 1);
     assert_eq!(samples(&pool).await, 10);
@@ -403,4 +409,93 @@ async fn the_repair_endpoints_accept_the_repair_token_and_nothing_else(pool: PgP
         actions,
         ["repair.opened", "repair.claimed", "repair.finished"]
     );
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_provider_under_repair_starts_no_lookup_until_the_repair_has_ended(pool: PgPool) {
+    drift(&pool, "DUMMY-P", "0.1.0", 3).await;
+    assert_eq!(tasks(&pool).await[0].2, "pending");
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracking_jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // A new request is accepted, but its lookup is held back.
+    let (_, key) = user(&pool, "later@example.com").await;
+    let reply = track(&app(&pool), &key, "DUMMY-OK-LATER").await;
+    assert_eq!(reply.status, 201, "{:?}", reply.body);
+    assert_eq!(reply.body["latest_job"], Value::Null);
+    let request_id = reply.body["id"].as_str().unwrap().to_string();
+    let waits: i64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM next_poll_at - clock_timestamp()))::bigint FROM shipments
+         WHERE tracking_number = 'DUMMY-OK-LATER'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        (200..=300).contains(&waits),
+        "asked again in five minutes, not {waits} s"
+    );
+
+    // A manual refresh says why nothing starts.
+    let refresh = call(
+        &app(&pool),
+        Method::POST,
+        &format!("/v1/tracking-requests/{request_id}/refresh"),
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(refresh.status, 409);
+    assert_eq!(refresh.body["error"]["code"], "provider_under_repair");
+
+    // The scheduler looks again, finds the repair still open and waits on.
+    let due = "UPDATE shipments SET next_poll_at = clock_timestamp() - interval '1 second'
+               WHERE tracking_number = 'DUMMY-OK-LATER'";
+    sqlx::query(due).execute(&pool).await.unwrap();
+    let stats = poll_due(&pool, 10).await.unwrap();
+    assert_eq!((stats.started, stats.postponed), (0, 1));
+    let jobs_now: i64 = sqlx::query_scalar("SELECT count(*) FROM tracking_jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs_now, jobs_before, "no lookup was started meanwhile");
+
+    // The repair ends: the held lookup starts by itself.
+    let task = repairs::claim(&pool).await.unwrap().expect("the open task");
+    let done = Finish::Published {
+        commit_sha: "0123abc".into(),
+        summary: "reads the new layout".into(),
+    };
+    assert!(repairs::finish(&pool, task.id, &done).await.unwrap());
+    sqlx::query(due).execute(&pool).await.unwrap();
+    let stats = poll_due(&pool, 10).await.unwrap();
+    assert_eq!((stats.started, stats.postponed), (1, 0));
+    let (trigger, status): (String, String) = sqlx::query_as(
+        "SELECT j.trigger::text, j.status::text FROM tracking_jobs j
+         JOIN shipments s ON s.id = j.shipment_id WHERE s.tracking_number = 'DUMMY-OK-LATER'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((trigger.as_str(), status.as_str()), ("poll", "QUEUED"));
+    let refresh = call(
+        &app(&pool),
+        Method::POST,
+        &format!("/v1/tracking-requests/{request_id}/refresh"),
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(refresh.status, 200, "{:?}", refresh.body);
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_task_for_a_new_provider_or_another_adapter_pauses_nothing(pool: PgPool) {
+    repairs::request_new_provider(&pool, &spec()).await.unwrap();
+    let (_, key) = user(&pool, "a@example.com").await;
+    let reply = track(&app(&pool), &key, "DUMMY-OK-1").await;
+    assert_eq!(reply.status, 201);
+    assert_ne!(reply.body["latest_job"], Value::Null);
 }

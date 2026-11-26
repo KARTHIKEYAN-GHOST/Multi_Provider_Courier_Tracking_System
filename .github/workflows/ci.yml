@@ -94,6 +94,10 @@ jobs:
       # does not allow one, those tests are skipped and the rest still runs.
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # The agent's browser with the system libraries it needs; without it the browser
+      # tests are skipped.
+      - name: Install the agent's browser
+        run: cd courier-ai-repair && uv sync && uv run playwright install --with-deps chromium-headless-shell
       - name: Format, lint, type-check, test
         run: make setup test-ai-repair
 

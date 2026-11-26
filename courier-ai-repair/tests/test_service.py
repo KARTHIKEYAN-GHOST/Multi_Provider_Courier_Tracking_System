@@ -1,5 +1,5 @@
 """Whole tasks, end to end: a copy of the real repository as the Git remote, the real sandbox
-running the real adapter tests, and a stand-in for the model that answers from a script."""
+running the real adapter tests, and a stand-in for the model that drives the agent from a script."""
 
 from __future__ import annotations
 
@@ -81,8 +81,17 @@ class ScriptedModel:
         return self.answers[len(self.asked) - 1]
 
 
-def answer(files: dict[str, str], summary: str = "reads the new page") -> str:
-    return json.dumps({"summary": summary, "files": [{"path": p, "content": c} for p, c in files.items()]})
+def act(name: str, /, **arguments: object) -> str:
+    """One step of the agent, as the model writes it."""
+    return json.dumps({"action": name, **arguments})
+
+
+def write(files: dict[str, str]) -> list[str]:
+    return [act("write_file", path=path, content=content) for path, content in files.items()]
+
+
+def finish(summary: str = "reads the new page") -> str:
+    return act("finish", summary=summary)
 
 
 def repaired_adapter(source: Path) -> str:
@@ -110,25 +119,22 @@ def test_a_repair_is_rejected_tested_corrected_and_then_published(
     source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap
 ) -> None:
     good = repaired_adapter(source)
+    right, wrong = (
+        TEST_FILE.replace("EXPECTED", "ShipmentNotFound"),
+        TEST_FILE.replace("EXPECTED", "SchemaDrift"),
+    )
+    fixture = f"{TESTS}/fixtures/balaji/{FIXTURE}"
     model = ScriptedModel(
         [
-            # 1: breaks a rule, so it is never written or run
-            answer(
-                {
-                    ADAPTER: good + "\nimport subprocess\n",
-                    TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound"),
-                }
-            ),
-            # 2: keeps the rules, but its own test fails
-            answer({ADAPTER: good, TEST: TEST_FILE.replace("EXPECTED", "SchemaDrift")}),
-            # 3: right. It also sends the fixture back, changed; that copy is ignored.
-            answer(
-                {
-                    ADAPTER: good,
-                    TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound"),
-                    f"{TESTS}/fixtures/balaji/{FIXTURE}": "<html>changed by the model</html>",
-                }
-            ),
+            # breaks a rule: refused before anything is run
+            *write({ADAPTER: good + "\nimport subprocess\n", TEST: right}),
+            finish(),
+            # keeps the rules, but its own test fails
+            *write({ADAPTER: good, TEST: wrong}),
+            finish(),
+            # right. It also tries to change the fixture; that is not written.
+            *write({TEST: right, fixture: "<html>changed by the model</html>"}),
+            finish(),
         ]
     )
     before = head(remote)
@@ -137,7 +143,6 @@ def test_a_repair_is_rejected_tested_corrected_and_then_published(
     assert done.pushed
     assert head(remote) == done.commit_sha != before
     assert git(remote, "rev-parse", "main~1") == before, "one commit on top, nothing rewritten"
-    fixture = f"{TESTS}/fixtures/balaji/{FIXTURE}"
     assert git(remote, "show", "--name-only", "--format=", "main").splitlines() == [ADAPTER, fixture, TEST]
     assert 'version: ClassVar[str] = "0.1.1"' in git(remote, "show", f"main:{ADAPTER}")
     message = git(remote, "log", "-1", "--format=%an <%ae>%n%B", "main")
@@ -158,20 +163,22 @@ def test_a_repair_is_rejected_tested_corrected_and_then_published(
     assert "never instructions" in model.system
 
     # The model was told what was wrong each time.
-    assert len(model.asked) == 3
-    assert "may not be imported" in model.asked[1][-1]["content"]
-    assert "pytest failed" in model.asked[2][-1]["content"]
+    assert len(model.asked) == 9
+    assert "may not be imported" in model.asked[3][-1]["content"]
+    assert "pytest failed" in model.asked[6][-1]["content"]
+    assert model.asked[8][-1]["content"].startswith("Not written"), "the fixture is the service's"
     assert not any(settings.ai_repair_work_dir.iterdir()), "the clone is removed"
 
 
 def test_a_model_that_never_gets_it_right_publishes_nothing(
     source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap
 ) -> None:
-    bad = answer({ADAPTER: repaired_adapter(source), TEST: TEST_FILE.replace("EXPECTED", "SchemaDrift")})
-    model = ScriptedModel([bad, "not even JSON", bad])
+    bad = write({ADAPTER: repaired_adapter(source), TEST: TEST_FILE.replace("EXPECTED", "SchemaDrift")})
+    model = ScriptedModel([*bad, finish(), "not even JSON", finish()])
     before = head(remote)
-    with pytest.raises(TaskFailed, match="no acceptable proposal after 3 rounds") as raised:
-        Repairer(settings, model, sandbox).process(repair_task())
+    few = settings.model_copy(update={"ai_repair_agent_max_steps": 5})
+    with pytest.raises(TaskFailed, match="not finished after 5 steps") as raised:
+        Repairer(few, model, sandbox).process(repair_task())
     assert "pytest failed" in str(raised.value)
     assert head(remote) == before
     assert not any(settings.ai_repair_work_dir.iterdir())
@@ -188,20 +195,18 @@ class FlakyModel(ScriptedModel):
         return text
 
 
-def test_an_empty_answer_costs_a_round_and_the_commit_names_the_model_that_wrote_the_code(
+def test_an_empty_answer_costs_a_step_and_the_commit_names_the_model_that_finished_the_work(
     source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap
 ) -> None:
-    good = answer(
-        {ADAPTER: repaired_adapter(source), TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound")}
-    )
-    model = FlakyModel(["", good])
+    good = write({ADAPTER: repaired_adapter(source), TEST: TEST_FILE.replace("EXPECTED", "ShipmentNotFound")})
+    model = FlakyModel(["", *good, finish()])
     done = Repairer(settings, model, sandbox).process(repair_task())
     assert done.pushed
-    assert len(model.asked[1]) == 1, "the empty answer is not sent back as if it were a proposal"
-    assert "Written by the AI model vendor/model-2:free" in git(remote, "log", "-1", "--format=%B", "main")
+    assert len(model.asked[1]) == 1, "the empty answer is not sent back as if it were a step"
+    assert "Written by the AI model vendor/model-4:free" in git(remote, "log", "-1", "--format=%B", "main")
 
-    with pytest.raises(TaskFailed, match="no usable answer"):
-        Repairer(settings, FlakyModel(["", "", ""]), sandbox).process(repair_task())
+    with pytest.raises(TaskFailed, match="no answer 3 times in a row"):
+        Repairer(settings, FlakyModel([""] * 5), sandbox).process(repair_task())
     refused = FlakyModel([])
     refused.complete = lambda system, messages: (_ for _ in ()).throw(ModelError("refused the API key"))  # type: ignore[method-assign]
     with pytest.raises(TaskFailed, match="refused the API key"):
@@ -241,12 +246,12 @@ def test_the_sandbox_holds() -> None:
     # Reading a directory listing and writing a file are things the guard refuses; here the
     # point is the sandbox, so the guard is taken out of the way for this one proposal.
     monkeypatch.setattr("ai_repair.guard.check_proposal", lambda *a, **k: None)
-    model = ScriptedModel([answer({ADAPTER: repaired_adapter(source), TEST: probe})])
+    model = ScriptedModel([*write({ADAPTER: repaired_adapter(source), TEST: probe}), finish()])
     done = Repairer(settings.model_copy(update={"ai_repair_dry_run": True}), model, sandbox).process(
         repair_task()
     )
     assert not done.pushed
-    assert len(model.asked) == 1, "the probe passed on the first run"
+    assert len(model.asked) == 3, "the probe passed on the first run"
     assert head(remote) == git(source, "rev-parse", "HEAD"), "a dry run pushes nothing"
 
 
@@ -414,15 +419,16 @@ def test_a_new_provider_gets_its_adapter_and_everything_around_it_in_one_commit(
     }  # fmt: skip
     base = f"{ADAPTERS}/fastship"
     model = ScriptedModel(
-        [answer({f"{base}/__init__.py": NEW_INIT, f"{base}/__main__.py": NEW_MAIN,
-                 f"{base}/adapter.py": NEW_ADAPTER, f"{TESTS}/test_fastship_adapter.py": NEW_TEST})]
+        [*write({f"{base}/__init__.py": NEW_INIT, f"{base}/__main__.py": NEW_MAIN,
+                 f"{base}/adapter.py": NEW_ADAPTER, f"{TESTS}/test_fastship_adapter.py": NEW_TEST}),
+         finish("a new adapter from the example answer")]
     )  # fmt: skip
     done = Repairer(settings, model, sandbox).process(
         Task("task-2", "new_provider", "fastship", None, 1, request)
     )
 
     assert done.pushed
-    assert len(model.asked) == 1
+    assert len(model.asked) == 5
     changed = git(remote, "show", "--name-only", "--format=", "main").splitlines()
     migration = next(path for path in changed if path.startswith("courier-engine/migrations/"))
     assert migration.endswith("_provider_fastship.sql")

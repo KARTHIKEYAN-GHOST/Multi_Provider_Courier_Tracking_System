@@ -1,7 +1,8 @@
 """What the model is told.
 
-The instructions are fixed text written here. Everything that came from outside (the
-provider's answer, the error text) is put into a marked block and declared to be data.
+The model is used only inside the agent. The instructions are fixed text written here.
+Everything that came from outside (the provider's answer, a web page, the error text) is put
+into a marked block and declared to be data.
 That does not make the model immune to text written to mislead it; the checks in
 ``guard`` and the sandbox are what the system relies on.
 """
@@ -11,17 +12,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-SYSTEM = """You maintain courier tracking adapters: small Python 3.13 modules that ask one \
-courier's API or website about a consignment and return its tracking events.
+from .agent.tools import DESCRIPTION as _ACTIONS
 
-You answer with one JSON object and nothing else:
-{"summary": "<one sentence: what you changed and why>",
- "files": [{"path": "<path from the repository root>", "content": "<the whole file>"}]}
-
-Rules. A proposal that breaks one is rejected automatically.
-- Write only files under courier-adapters/adapters/<key>/ and the one test file \
-courier-adapters/tests/test_<key>_adapter.py. Always give whole files. The fixture files named in \
-the task already exist: read them in your tests, do not send them.
+_RULES = """Rules. Work that breaks one is rejected automatically.
+- Write only files under courier-adapters/adapters/<key>/ and the test files \
+courier-adapters/tests/test_<key>_adapter.py and test_<key>_repairs.py. write_file always takes \
+the whole file. Fixture files are written for you (by the task, or by save_fixture): read them in \
+your tests.
 - The adapter class has exactly these two lines: `key: ClassVar[str] = "<key>"` (the key given in \
 the task, in lowercase) and `version: ClassVar[str] = "<x.y.z>"`.
 - Imports allowed in adapter code: __future__, os, re, typing, datetime, json, dataclasses, httpx, \
@@ -82,14 +79,14 @@ def repair(
         "reads the recorded answers below correctly, and keep what it already did right.",
         f"Approved hosts: {', '.join(sorted(hosts)) or '(none)'}",
         "The adapter's files (you may replace these):\n\n" + _files(files),
-        "Send only the files you change: usually the parser, and adapter.py for the higher version. "
-        f"Do NOT send the existing test file back unless one of its tests must change. Put your new "
-        f"tests into courier-adapters/tests/test_{key}_repairs.py (if that file is shown above, send it "
+        "Write only the files you change: usually the parser, and adapter.py for the higher version. "
+        f"Leave the existing test file alone unless one of its tests must change. Put your new tests "
+        f"into courier-adapters/tests/test_{key}_repairs.py (if that file is shown above, write it "
         "whole with your tests added). It must contain at least one test that reads each recorded "
         "answer below from its fixture file and checks what the adapter makes of it. "
         "Exception: if an existing test expects the very failure you are repairing (for example it "
-        "asserts that this new format raises SchemaDrift), that test is now wrong. Then you must send "
-        "the existing test file too, complete, with only that test corrected to expect the new "
+        "asserts that this new format raises SchemaDrift), that test is now wrong. Then write the "
+        "existing test file too, complete, with only that test corrected to expect the new "
         "behaviour and every other test unchanged.",
     ]
     if context:
@@ -152,8 +149,43 @@ def new_provider(
     return "\n\n".join(parts)
 
 
-def retry(problem: str) -> str:
-    return (
-        "Your proposal was not accepted. Send a complete corrected proposal in the same JSON form.\n"
-        + _block("output of the automatic checks", problem[-6000:])
+AGENT_SYSTEM = (
+    """You maintain courier tracking adapters: small Python 3.13 modules that ask one courier's \
+API or website about a consignment and return its tracking events. You work in steps. In every \
+reply you give exactly one action as one JSON object and nothing else, for example \
+{"action": "open_page", "url": "https://..."}. You then get the result and choose the next action.
+
+The actions:
+"""
+    + _ACTIONS
+    + """
+
+For write_file you may put the file after the JSON object in a ``` fenced block instead of the \
+"content" argument.
+
+How to work:
+- Find out first, then write. Look at the courier's page, see which request brings the tracking \
+answer (the browser lists the requests it made, with what was sent), and write the adapter so that \
+it makes that same request with httpx. The adapter never uses a browser.
+- Keep one real answer as a fixture with save_fixture and test the adapter against it.
+- Be sparing with the courier's site: a few page views, at most two tracking lookups. Use only a \
+consignment number given in the task; if none is given, make one lookup with an invented number to \
+see the "not found" answer and do not guess further numbers.
+- If the site shows a CAPTCHA or asks for a one-time code, never try to solve or bypass it. Read \
+courier-adapters/adapters/demosite/adapter.py with read_file and write the adapter the same way: \
+it hands the challenge to a person through the SDK.
+- run_checks tells you what is still wrong. finish is accepted only when the checks pass.
+
+"""
+    + _RULES
+)
+
+
+def agent_task(base: str, hosts: set[str], *, browser: bool) -> str:
+    """The task for the agent: the same facts as for a single answer, and where it may go."""
+    reach = (
+        "You have a browser and an HTTP client. Both reach only these approved hosts: "
+        if browser
+        else "You have an HTTP client (no browser in this task). It reaches only these approved hosts: "
     )
+    return base + "\n\n" + reach + (", ".join(sorted(hosts)) or "(none)") + "."

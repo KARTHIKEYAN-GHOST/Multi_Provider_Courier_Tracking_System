@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import signal
 import sys
 import time
 from pathlib import Path
@@ -17,6 +19,10 @@ from .service import Repairer, TaskFailed
 log = structlog.get_logger()
 
 
+def _stop(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def run_once(engine: EngineClient, repairer: Repairer) -> bool:
     """Claims and does one task. Returns False when there was none."""
     task = engine.claim()
@@ -24,6 +30,13 @@ def run_once(engine: EngineClient, repairer: Repairer) -> bool:
         return False
     try:
         done = repairer.process(task)
+    except KeyboardInterrupt:
+        # Stopped by hand or by the container: hand the task back, so that the adapter's
+        # lookups are not held back for a task nobody works on.
+        log.warning("task_interrupted", task=task.id, adapter=task.adapter_key)
+        with contextlib.suppress(EngineUnavailable):
+            engine.failed(task.id, "the repair service was stopped while working on this task")
+        raise
     except TaskFailed as error:
         log.warning("task_failed", task=task.id, adapter=task.adapter_key, reason=str(error)[:500])
         engine.failed(task.id, str(error))
@@ -64,17 +77,41 @@ def main() -> int:
         retries=settings.ai_repair_llm_retries,
         retry_wait_s=settings.ai_repair_llm_retry_wait_s,
     )
+    if settings.ai_repair_agent_browser:
+        try:
+            from playwright.sync_api import sync_playwright
+
+            # Started for real: the path Playwright names is the full browser's, which is not
+            # what is installed (the headless shell is).
+            with sync_playwright() as started:
+                started.chromium.launch(headless=True, env={}).close()
+            browser_ready = True
+        except Exception:
+            browser_ready = False
+        if not browser_ready:
+            print(
+                "The agent's browser is not installed; it will work with plain HTTP only. To install it: "
+                "cd courier-ai-repair && uv run playwright install chromium-headless-shell",
+                file=sys.stderr,
+            )
+            settings = settings.model_copy(update={"ai_repair_agent_browser": False})
     engine = EngineClient(settings.ai_repair_engine_url, settings.engine_repair_token.get_secret_value())
     repairer = Repairer(settings, model, sandbox)
     once = "--once" in sys.argv[1:]
-    log.info("repair_service_started", model=settings.openrouter_model, dry_run=settings.ai_repair_dry_run,
-             branch=settings.ai_repair_push_branch)  # fmt: skip
+    log.info(
+        "repair_service_started",
+        model=settings.openrouter_model,
+        dry_run=settings.ai_repair_dry_run,
+        branch=settings.ai_repair_push_branch,
+    )
     print(
         "The repair service keeps running and waits for tasks; it is silent while there are none. "
         "Stop it with Ctrl+C.",
         file=sys.stderr,
     )
     idle_reported = False
+    # "docker stop" sends SIGTERM: treated like Ctrl+C, so a task in work is handed back.
+    signal.signal(signal.SIGTERM, _stop)
     try:
         while True:
             try:

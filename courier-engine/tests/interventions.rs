@@ -112,6 +112,18 @@ async fn exec(pool: &PgPool, sql: &'static str) {
     sqlx::query(sql).execute(pool).await.unwrap();
 }
 
+/// A user who is not a staff member (for example a program's account): it sees only the
+/// challenges of its own lookups.
+async fn restricted_user(pool: &PgPool, email: &str) -> (Uuid, String) {
+    let (id, key) = user(pool, email).await;
+    sqlx::query("UPDATE users SET is_staff = false WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    (id, key)
+}
+
 async fn job_status(pool: &PgPool) -> String {
     text(pool, "SELECT status::text FROM tracking_jobs").await
 }
@@ -204,7 +216,7 @@ async fn fetch_answer(pool: &PgPool, adapter: &str, job_id: Uuid, id: &str) -> O
 // ----------------------------------------------------------------------------- waiting
 
 #[sqlx::test(migrator = "MIGRATOR")]
-async fn a_challenge_parks_the_job_and_is_shown_only_to_its_user(pool: PgPool) {
+async fn a_challenge_parks_the_job_and_a_restricted_user_sees_only_their_own(pool: PgPool) {
     let (key, _, id) = waiting_job(&pool, json!({})).await;
 
     assert_eq!(job_status(&pool).await, "WAITING_FOR_OTP");
@@ -238,7 +250,7 @@ async fn a_challenge_parks_the_job_and_is_shown_only_to_its_user(pool: PgPool) {
         assert!(one.body.get(hidden).is_none(), "{hidden} is exposed");
     }
 
-    let (_, stranger) = user(&pool, "stranger@example.com").await;
+    let (_, stranger) = restricted_user(&pool, "stranger@example.com").await;
     assert_eq!(
         get(&app(&pool), &format!("/v1/interventions/{id}"), &stranger)
             .await
@@ -325,7 +337,7 @@ async fn a_challenge_of_an_automatic_poll_goes_to_the_first_subscriber(pool: PgP
     let (first, first_key) = user(&pool, "first@example.com").await;
     let reply = track(&app(&pool), &first_key, "DUMMY-OK-1").await;
     let job_id = Uuid::parse_str(reply.body["latest_job"]["id"].as_str().unwrap()).unwrap();
-    let (_, second_key) = user(&pool, "second@example.com").await;
+    let (_, second_key) = restricted_user(&pool, "second@example.com").await;
     track(&app(&pool), &second_key, "DUMMY-OK-1").await;
     exec(
         &pool,
@@ -771,4 +783,51 @@ async fn a_resume_nobody_picks_up_is_closed_by_the_queue_deadline_and_its_answer
     );
     assert_eq!(scalar(&pool, "SELECT count(*) FROM human_interventions WHERE status = 'closed' AND ciphertext IS NULL").await, 1);
     assert_eq!(fetch_answer(&pool, "dummy", job_id, &id).await, None);
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_staff_member_sees_and_answers_every_open_challenge(pool: PgPool) {
+    let (owner, _, id) = waiting_job(&pool, json!({})).await;
+    // Every user is a staff member unless that is taken away.
+    let (staff_id, staff) = user(&pool, "staff@example.com").await;
+    let one = format!("/v1/interventions/{id}");
+    let list = get(&app(&pool), "/v1/interventions", &staff).await;
+    assert_eq!(list.body["items"][0]["id"], id.as_str());
+    assert_eq!(list.body["items"][0]["tracking_number"], "DUMMY-OK-1");
+    assert_eq!(
+        list.body["items"][0]["tracking_request_id"],
+        Value::Null,
+        "the owner's request is not the staff member's"
+    );
+    assert_eq!(get(&app(&pool), &one, &staff).await.status, 200);
+    // The owner still sees it too.
+    assert_eq!(get(&app(&pool), &one, &owner).await.status, 200);
+
+    // Taking the role away closes the view again.
+    sqlx::query("UPDATE users SET is_staff = false WHERE id = $1")
+        .bind(staff_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(get(&app(&pool), &one, &staff).await.status, 404);
+    assert_eq!(answer(&pool, &staff, &id, ANSWER).await.status, 404);
+    sqlx::query("UPDATE users SET is_staff = true WHERE id = $1")
+        .bind(staff_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The staff member answers; it is recorded who did, and one answer is all a challenge takes.
+    assert_eq!(answer(&pool, &staff, &id, ANSWER).await.status, 202);
+    let by: Uuid = sqlx::query_scalar("SELECT answered_by FROM human_interventions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(by, staff_id);
+    assert_ne!(job_status(&pool).await, "WAITING_FOR_OTP");
+    assert_ne!(answer(&pool, &owner, &id, ANSWER).await.status, 202);
+    assert_eq!(
+        get(&app(&pool), "/v1/interventions", &staff).await.body["items"],
+        json!([])
+    );
 }

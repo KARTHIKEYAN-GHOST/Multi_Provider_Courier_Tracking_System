@@ -38,6 +38,9 @@ pub struct DispatchTarget {
     pub min_dispatch_interval_ms: i32,
     /// The provider's credential in use, if one is stored.
     pub credential_id: Option<Uuid>,
+    /// A repair of the adapter is waiting or under way. Its lookups would fail one by one,
+    /// so no new lookup is started until the repair has ended (see `REPAIR_PAUSE_HOURS`).
+    pub under_repair: bool,
 }
 
 impl DispatchTarget {
@@ -53,13 +56,22 @@ impl DispatchTarget {
     }
 }
 
+/// A repair pauses its provider for at most this long. A task nobody works on (the repair
+/// service is not running) must not keep a courier switched off for ever. The same number
+/// is written in `dispatch_target_select`.
+pub const REPAIR_PAUSE_HOURS: i64 = 6;
+
 // Every SQL string in the Engine is a compile-time constant; shared fragments use macros.
 macro_rules! dispatch_target_select {
     () => {
         "SELECT p.id AS provider_id, p.code AS provider_code, a.id AS adapter_id, a.key AS adapter_key,
                 p.timeout_ms, p.queue_wait_max_ms, p.max_attempts, p.tracking_method,
                 p.scraping_authorized, p.requires_credential, p.min_dispatch_interval_ms,
-                c.id AS credential_id
+                c.id AS credential_id,
+                EXISTS (SELECT 1 FROM repair_tasks t
+                        WHERE t.adapter_key = a.key AND t.kind = 'repair'
+                          AND t.status IN ('pending', 'running')
+                          AND t.created_at > clock_timestamp() - interval '6 hours') AS under_repair
          FROM providers p
          JOIN adapters a ON a.provider_id = p.id
          LEFT JOIN provider_credentials c ON c.provider_id = p.id AND c.revoked_at IS NULL"

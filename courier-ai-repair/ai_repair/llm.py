@@ -7,15 +7,10 @@ What comes back is text and is treated as untrusted (see ``guard``).
 
 from __future__ import annotations
 
-import json
-import re
 import time
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
-
-from .guard import ProposedFile
 
 
 class ModelError(Exception):
@@ -27,12 +22,6 @@ class ModelError(Exception):
     def __init__(self, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
-
-
-@dataclass(frozen=True)
-class Proposal:
-    summary: str
-    files: list[ProposedFile]
 
 
 class Model(Protocol):
@@ -143,33 +132,3 @@ class OpenRouterModel:
 
     def close(self) -> None:
         self._client.close()
-
-
-_FENCE = re.compile(r"^```[a-zA-Z]*\s*\n(.*)\n```\s*$", re.DOTALL)
-
-
-def parse_proposal(text: str) -> Proposal:
-    """Reads the model's answer: ``{"summary": "...", "files": [{"path": "...", "content": "..."}]}``."""
-    text = text.strip()
-    fenced = _FENCE.match(text)
-    if fenced:
-        text = fenced.group(1)
-    # Weaker models wrap the object in a sentence or two; the object itself is what counts.
-    start, end = text.find("{"), text.rfind("}")
-    try:
-        data = json.loads(text[start : end + 1]) if 0 <= start < end else None
-    except ValueError:
-        data = None
-    if data is None:
-        raise ModelError("the answer is not a JSON object") from None
-    files = data.get("files") if isinstance(data, dict) else None
-    if not isinstance(files, list):
-        raise ModelError('the answer has no "files" list')
-    proposed = []
-    for item in files:
-        path, content = (item.get("path"), item.get("content")) if isinstance(item, dict) else (None, None)
-        if not isinstance(path, str) or not isinstance(content, str):
-            raise ModelError('every file needs a "path" and a "content" text')
-        proposed.append(ProposedFile(path.strip(), content if content.endswith("\n") else content + "\n"))
-    summary = data.get("summary")
-    return Proposal(summary if isinstance(summary, str) else "", proposed)

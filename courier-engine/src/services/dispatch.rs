@@ -35,6 +35,8 @@ pub enum DispatchError {
     ShipmentArchived,
     #[error("provider is not available")]
     ProviderUnavailable,
+    #[error("the provider's adapter is being repaired")]
+    UnderRepair,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -109,7 +111,12 @@ async fn try_create(
 
     // 3. Job: only for a new subscription, only if the shipment can still change,
     //    and only if no job is already active for the shipment.
-    let job_id = if created && !shipment.current_status.is_terminal() {
+    let job_id = if created && !shipment.current_status.is_terminal() && target.under_repair {
+        // The adapter is being repaired: the request is accepted, and the lookup starts by
+        // itself once the repair has ended.
+        super::polling::defer_for_repair(&mut tx, shipment.id).await?;
+        None
+    } else if created && !shipment.current_status.is_terminal() {
         let job_id = ensure_job(
             &mut tx,
             &target,
@@ -181,6 +188,9 @@ pub async fn refresh(
     if let Some(reason) = target.blocked_reason() {
         tracing::warn!(provider = %target.provider_code, reason, "refresh refused");
         return Err(DispatchError::ProviderUnavailable);
+    }
+    if target.under_repair {
+        return Err(DispatchError::UnderRepair);
     }
 
     let result = match ensure_job(

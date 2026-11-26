@@ -55,6 +55,7 @@ fn golden_job_track() -> String {
         requires_credential: false,
         min_dispatch_interval_ms: 0,
         credential_id: None,
+        under_repair: false,
     };
     let message = dispatch::job_track_message(
         fixed_uuid(0x10),

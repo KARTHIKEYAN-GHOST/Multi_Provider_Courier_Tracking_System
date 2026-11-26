@@ -269,19 +269,23 @@ def test_a_lost_session_restarts_the_lookup_and_asks_again(stack: Stack, user: U
         assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 
-def test_a_challenge_belongs_to_the_user_who_asked_and_nobody_else(stack: Stack, user: User) -> None:
-    other = stack.new_user()
+def test_every_user_is_staff_and_a_restricted_one_sees_only_their_own(stack: Stack, user: User) -> None:
+    colleague, restricted = stack.new_user(), stack.new_user()
+    stack.admin("set-staff", "--email", restricted.email, "--staff", "false")
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
     challenge = challenge_for(user, request_id)
 
-    assert pending(other) == []
-    assert other.http.get(f"/interventions/{challenge['id']}").status_code == 404
-    assert answer(other, challenge["id"], otp(tracking_number)).status_code == 404
+    # A user restricted to their own lookups sees nothing of it and cannot answer it.
+    assert pending(restricted) == []
+    assert restricted.http.get(f"/interventions/{challenge['id']}").status_code == 404
+    assert answer(restricted, challenge["id"], otp(tracking_number)).status_code == 404
     assert httpx.get(f"{stack.base_url}/v1/interventions").status_code == 401
-    assert user.job(request_id)["status"] == OTP, "the stranger's attempt changed nothing"
+    assert user.job(request_id)["status"] == OTP, "the refused attempt changed nothing"
 
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
+    # Any other user is a staff member: the challenge is in their queue and they answer it.
+    assert challenge["id"] in [item["id"] for item in pending(colleague)]
+    assert answer(colleague, challenge["id"], otp(tracking_number)).status_code == 202
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 

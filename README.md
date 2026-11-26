@@ -9,6 +9,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/phase-7.md](docs/phase-7.md) — automatic re-polling, status-mapping management, archiving and retention
 - [docs/phase-8.md](docs/phase-8.md) — one-time codes and CAPTCHAs: sessions in Redis, the intervention workflow, the human interface
 - [docs/indian-couriers.md](docs/indian-couriers.md) — Delhivery, Safexpress, SkyKing, ABT and Balaji Roadlines: how each is tracked, what each needs before use
+- [docs/phase-10.md](docs/phase-10.md) — The agent: the AI works in steps with a browser, an HTTP client and the adapter's files, with any chat model
 - [docs/phase-9.md](docs/phase-9.md) — AI repair service: repairs a broken adapter or writes one for a new courier, checks it, and pushes it to GitHub
 
 ## Status

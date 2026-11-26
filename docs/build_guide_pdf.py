@@ -595,9 +595,9 @@ H2("The path of a repair")
 B("The adapter calls ctx.keep_evidence(response) on the courier's answer. If the lookup fails with PARSE_ERROR or SCHEMA_DRIFT, the worker sends that answer along with the failure.",
   "The Engine stores it. After three such lookups of one adapter version within 24 hours it opens a repair task.",
   "The repair service claims the task over the Engine's internal API, with its own token. It has no access to the database, RabbitMQ or Redis.",
-  "It makes a fresh clone from GitHub, removes the tracking number, e-mail addresses and phone numbers from the answers, and asks the model (through OpenRouter) for whole files.",
+  "It makes a fresh clone from GitHub, removes the tracking number, e-mail addresses and phone numbers from the answers, and hands the task to the agent, which works in steps (chapter 16).",
   "The guard checks the proposal against fixed rules before a file is written.",
-  "The linter, the type checker and the adapter's tests run in a sandbox without network and without secrets. A rejected or failing proposal goes back to the model, three rounds at most.",
+  "The linter, the type checker and the adapter's tests run in a sandbox without network and without secrets. What is refused or fails goes back to the agent, until its steps run out.",
   "Only the files of the task are committed and pushed (never forced). The Engine records the commit, or the reason for the failure.")
 H2("What generated code may not do")
 T(["Rule", "Detail"], [
@@ -644,16 +644,54 @@ B("The tests are written by the same model as the code. An adapter can pass them
   "Other devices must pull and rebuild: a repaired adapter needs its worker restarted, a new provider also needs the Engine rebuilt (migrations and queues are compiled into it).")
 
 # ---------------------------------------------------------------- 16
-H1("16. Current state, open points and what comes next")
+H1("16. Phase 10: the agent")
+P("In Phase 9 the model was asked once and answered with whole files; it never saw the courier's website. That way has been removed. "
+  "From Phase 10 the model is used only inside an agent: in steps, with a browser, an HTTP client and the adapter's files, and it runs the checks itself until they pass. "
+  "What it produces is the same as before: a fixed adapter that speaks plain HTTP. The browser and the model are used while an adapter is written or repaired, never while consignments are tracked. Full details are in docs/phase-10.md.")
+H2("Independent of the model")
+B("In every step the model answers with one JSON object naming one action, for example open_page with an address. The service does it and sends the result back.",
+  "No supplier's tool-calling feature is used, so any chat model from any supplier can drive the agent. Model and supplier are settings.",
+  "Replies wrapped in sentences are understood, a file may follow in a fenced block, an unusable reply costs one step, and old results are shortened so a small context is enough.")
+H2("The actions")
+T(["Action", "What it does"], [
+  ["open_page, click, type, select", "Drive the browser on an approved address"],
+  ["look, page_html", "Describe the page: text, forms with every field, links, and the requests the browser made with what was sent"],
+  ["http", "One GET or POST without the browser"],
+  ["save_fixture", "Keep the page or the last answer as a test fixture, with the consignment number, e-mail addresses and phone numbers removed"],
+  ["list_files, read_file, write_file", "The adapter's files; writing only the adapter's own"],
+  ["run_checks, finish", "Code rules, ruff, mypy and tests in the sandbox; the work is accepted only when they pass"],
+], [50, 116])
+H2("What the agent cannot do")
+B("Reach anything but the adapter's approved hosts. A local or private address needs the exact port the adapter names, so the demo site being approved does not open the Engine, the database or the broker.",
+  "Make more than a fixed number of requests per task, or two requests to a courier within a second.",
+  "Write anything but one adapter's files in a throwaway clone.",
+  "See a secret: the browser starts with an empty environment, the HTTP client sends no credentials.",
+  "Publish by saying it is done: the guard and the sandboxed checks decide, as in Phase 9.",
+  "It is told never to solve or bypass a CAPTCHA or one-time code, and to write the adapter so that a person is asked.")
+P("In agent mode, requesting an adapter or a repair makes the agent open the courier's website and look up a consignment at most twice. Do this only for sites you may access this way.")
+
+H2("Staff answer the challenges")
+B("The people who use this system are the company's own staff. Every user therefore sees every open one-time code and CAPTCHA, oldest first, and may answer any of them.",
+  "A challenge takes one answer, and who gave it is recorded. One user, for example an account a program uses, can be restricted to the challenges of its own lookups with admin set-staff.")
+H2("A courier is paused while its adapter is repaired")
+B("While a repair task is waiting or being worked on, a new tracking request is accepted but no lookup is started; the Engine looks again every five minutes and starts it when the repair has ended.",
+  "A manual refresh is answered with 409 provider_under_repair, and automatic polls are postponed.",
+  "The pause ends when the task is published or has failed, and at the latest after six hours.")
+H2("The agent in a container")
+P("make up-ai starts the repair service as a container with the browser and the checking tools. It receives only its own settings, runs as an unprivileged user without capabilities, and needs Docker's system-call filter switched off for its sandboxes. The image has not been built or run yet.")
+
+# ---------------------------------------------------------------- 17
+H1("17. Current state, open points and what comes next")
 H2("Verified")
-B("942 automated tests pass: 99 contract, 189 Engine, 450 adapter, 29 human-interface, 118 AI repair service, 57 end-to-end.",
+B("957 automated tests pass: 99 contract, 192 Engine, 450 adapter, 29 human-interface, 130 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
 B("The Docker images and the full container stack (make up, make smoke) had not been built at the time of writing; the Compose file itself validates.",
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
-  "The AI repair service has written one adapter with a free OpenRouter model in a dry run (cloned from GitHub, checked, tested, not pushed). It has never pushed to GitHub.",
+  "The AI repair service has written one adapter (The Professional Couriers) with a free model and pushed it to GitHub; that adapter has never read a real result page.",
+  "The agent of Phase 10 is tested with a stand-in model that answers from a script and with the real browser against the demo site. It has not yet completed a task with a real model.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
@@ -667,7 +705,7 @@ T(["Phase", "Deliverable"], [
   ["7 (done)", "Status-mapping management, automatic re-polling until a shipment is finished, archiving and retention"],
   ["8 (done)", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
   ["9 (done)", "AI repair service: repairs a broken adapter or writes one for a new courier, checks it in a sandbox and pushes it to GitHub"],
-  ["10", "AI failure diagnosis and status interpretation (advisory only); optional human review of repairs"],
+  ["10 (done)", "The agent: browser, HTTP client and code environment for the AI, with any model; staff answer CAPTCHAs and one-time codes; a courier is paused during its repair; container for the agent"],
   ["11", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
   ["12", "Production images and deployment documentation"]], [16, 150])
 H2("Glossary")

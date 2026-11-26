@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     and the GitHub token. None of them is ever given to the model, written into the
     repository or passed into the sandbox."""
 
-    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
+    # An empty value counts as "not set": Compose passes every listed setting, also the
+    # ones the operator left out, and those must fall back to the defaults here.
+    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore", env_ignore_empty=True)
 
     #: The Engine's internal API, e.g. http://127.0.0.1:8081
     ai_repair_engine_url: str = "http://127.0.0.1:8081"
@@ -46,8 +48,13 @@ class Settings(BaseSettings):
     #: true = do everything except the push (to look at what it would publish).
     ai_repair_dry_run: bool = True
 
-    #: How often the model may try again after its proposal was rejected or its tests failed.
-    ai_repair_max_rounds: int = Field(default=3, ge=1, le=6)
+    #: How many actions the agent may take on one task, and how many requests it may make
+    #: to the courier's site while doing so.
+    ai_repair_agent_max_steps: int = Field(default=40, ge=5, le=200)
+    ai_repair_agent_max_requests: int = Field(default=60, ge=0, le=500)
+    #: false = the agent works without a browser (plain HTTP only).
+    ai_repair_agent_browser: bool = True
+
     ai_repair_poll_s: float = Field(default=60.0, ge=1, le=3600)
     ai_repair_sandbox_timeout_s: float = Field(default=300.0, ge=10, le=1800)
     #: Where clones are made. Each task gets its own directory, removed afterwards.

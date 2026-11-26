@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from ai_repair.engine import EngineClient, EngineUnavailable
-from ai_repair.llm import ModelError, OpenRouterModel, parse_proposal
+from ai_repair.llm import ModelError, OpenRouterModel
 
 TOKEN = "repair-token-0123456789-0123456789-abcdef"
 API_KEY = "sk-or-v1-not-a-real-key"
@@ -179,19 +179,38 @@ def test_a_model_that_no_longer_exists_does_not_stop_the_service() -> None:
     assert model.last_model == "c/last"
 
 
-def test_the_models_answer_is_read_strictly() -> None:
-    answer = '```json\n{"summary": "s", "files": [{"path": " a.py ", "content": "x = 1"}]}\n```'
-    proposal = parse_proposal(answer)
-    assert (proposal.summary, proposal.files[0].path, proposal.files[0].content) == ("s", "a.py", "x = 1\n")
-    wrapped = parse_proposal('Here you go:\n{"summary": "s", "files": []}\nHope this helps!')
-    assert wrapped.summary == "s"
-    for bad in [
-        "sure, here it is",
-        "[]",
-        "{not json}",
-        '{"files": "x"}',
-        '{"files": [{"path": "a"}]}',
-        '{"files": [3]}',
-    ]:
-        with pytest.raises(ModelError):
-            parse_proposal(bad)
+def test_a_setting_passed_empty_counts_as_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compose passes every listed setting, also those the operator left out."""
+    from ai_repair.config import Settings
+
+    monkeypatch.setenv("OPENROUTER_MODEL", "")
+    monkeypatch.setenv("AI_REPAIR_AGENT_MAX_STEPS", "")
+    settings = Settings(_env_file=None)
+    assert settings.openrouter_model.startswith("baidu/")
+    assert settings.ai_repair_agent_max_steps == 40
+
+
+def test_a_task_in_work_is_handed_back_when_the_service_is_stopped() -> None:
+    from ai_repair.__main__ import run_once
+    from ai_repair.engine import Task
+
+    class Engine:
+        def __init__(self) -> None:
+            self.reported: list[tuple[str, str]] = []
+
+        def claim(self) -> Task:
+            return Task(
+                id="t1", kind="repair", adapter_key="demosite", adapter_version=None, attempts=1, request={}
+            )
+
+        def failed(self, task_id: str, reason: str) -> None:
+            self.reported.append((task_id, reason))
+
+    class Stopped:
+        def process(self, task: Task) -> None:
+            raise KeyboardInterrupt
+
+    engine = Engine()
+    with pytest.raises(KeyboardInterrupt):
+        run_once(engine, Stopped())  # type: ignore[arg-type]
+    assert engine.reported == [("t1", "the repair service was stopped while working on this task")]

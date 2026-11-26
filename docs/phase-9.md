@@ -5,6 +5,11 @@ adapter yet, an AI model writes the code. The repair service checks that code, t
 a sandbox and pushes it to the `main` branch on GitHub, so every device gets it with
 `git pull`.
 
+> **Changed in Phase 10.** The model is no longer asked once for whole files. It is used
+> only inside the **agent**, which works in steps with a browser, an HTTP client and the
+> adapter's files ([phase-10.md](phase-10.md)). Everything else on this page still holds:
+> how a task is opened, the guard, the sandbox, the commit and the push.
+
 **Nobody reviews the code before it reaches `main`.** That was chosen deliberately for this
 phase. The automatic checks described below are the only gate. Read
 [What can still go wrong](#what-can-still-go-wrong) before switching the service on.
@@ -21,10 +26,10 @@ Engine: adapter_failure_samples ──3 lookups──► repair_tasks (pending)
                                         AI repair service (separate program)
         1 fresh clone of the repository from GitHub
         2 scrub the answers (tracking number, e-mail addresses, phone numbers)
-        3 ask the model through OpenRouter for whole files
-        4 guard: fixed rules on the proposed files, before anything is written
+        3 the agent works in steps: looks, writes the adapter's files, runs the checks
+        4 guard: fixed rules on what it wrote
         5 sandbox: ruff, mypy and the adapter's tests, no network, no secrets
-          (a rejected or failing proposal goes back to the model, 3 rounds at most)
+          (what is refused or fails goes back to the agent, until its steps run out)
         6 commit only the files that belong to the task
         7 git push origin HEAD:main   (never forced)
                                                      │  POST /internal/v1/repairs/{id}/result
@@ -191,7 +196,7 @@ others only when it is unavailable or rate-limited. The last entry, `openrouter/
 OpenRouter's own pick among whatever is free at that moment.
 
 The order comes from a trial on 25 November 2026: every free text model OpenRouter offered
-was run through this service on its own two kinds of task, in dry-run mode, three rounds at
+was run through this service on its own two kinds of task, in dry-run mode, three rounds (of the single-question way used then) at
 most. "Passed" means the code got through the guard, ruff, mypy and its tests in the sandbox.
 
 | Model | New adapter | Repair | Notes |
@@ -213,9 +218,9 @@ Three more things to know about free models:
 
 - Free models are rate-limited per minute and per day, for the whole account. The service
   waits and repeats a refused call (`AI_REPAIR_LLM_RETRIES`, default 3, 30 seconds apart),
-  and an answer that never comes costs one of the task's rounds.
-- They are weaker at writing code than paid models. Expect some tasks to end as "no
-  acceptable proposal after 3 rounds". Nothing is published in that case.
+  and an answer that never comes costs one of the task's steps.
+- They are weaker at writing code than paid models. Expect some tasks to end as "not
+  finished after 40 steps". Nothing is published in that case.
 - Providers of free models may keep and train on what is sent to them, and OpenRouter
   offers them only if the account's privacy settings allow that. What is sent here is
   adapter source code and scrubbed courier answers.
@@ -308,8 +313,8 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
   recognize names or street addresses. If the repository is public, so are the fixtures.
 - **A new provider's adapter is untested against the real courier**, exactly like the
   hand-written ones were. The gates (credential, scraping permission) still apply.
-- **Cost.** Every round sends the adapter's source and the answers to the model. Three
-  rounds at most per task, one task per adapter at a time, six hours between failed
+- **Cost.** Every step sends the task and the recent steps to the model. Forty steps at
+  most per task (`AI_REPAIR_AGENT_MAX_STEPS`), one task per adapter at a time, six hours between failed
   attempts. Set a spending limit on the OpenRouter key.
 
 ## Settings
@@ -322,7 +327,7 @@ new queues, so the Engine must be rebuilt and restarted as well (both are compil
 | `AI_REPAIR_GITHUB_REPO`, `AI_REPAIR_GITHUB_TOKEN` | — | required |
 | `AI_REPAIR_PUSH_BRANCH` | `main` | where finished work is pushed |
 | `AI_REPAIR_DRY_RUN` | `true` | `true`: everything except the push. Set `false` to publish |
-| `AI_REPAIR_MAX_ROUNDS` | `3` | corrections the model may attempt |
+| `AI_REPAIR_AGENT_MAX_STEPS` | `40` | actions the agent may take on one task |
 | `AI_REPAIR_POLL_S` | `60` | seconds between questions to the Engine |
 | `AI_REPAIR_ENGINE_URL` | `http://127.0.0.1:8081` | the Engine's internal API |
 | `AI_REPAIR_SANDBOX_TIMEOUT_S` | `300` | limit for one check |

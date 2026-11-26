@@ -57,6 +57,8 @@ def settings(tmp_path: Path, remote: Path) -> Settings:
         openrouter_model="test/fake-model",
         # Said here, so the tests do not depend on what the default is.
         ai_repair_dry_run=False,
+        # The browser has its own tests; whole tasks here are scripted and need none.
+        ai_repair_agent_browser=False,
     )
 
 

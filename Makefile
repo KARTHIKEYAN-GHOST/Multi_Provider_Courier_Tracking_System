@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -21,7 +21,7 @@ setup: env ## Install project-local Python environments (uv-managed Python 3.13;
 	cd courier-adapters && uv sync
 	cd tests-e2e && uv sync
 	cd courier-human-interface && uv sync
-	cd courier-ai-repair && uv sync
+	cd courier-ai-repair && uv sync && uv run playwright install chromium-headless-shell
 
 compose-config: env ## Validate the Compose file (does not need a running Docker daemon)
 	$(COMPOSE) config --quiet && echo "compose file OK"
@@ -37,6 +37,9 @@ up: env ## Build and start the stack: PostgreSQL, RabbitMQ, Redis, Engine, dummy
 
 up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY and DHL_WORKER_TOKEN in .env; see docs/phase-6.md)
 	$(COMPOSE) --profile dhl up -d --build --wait
+
+up-ai: env ## Additionally start the AI repair service with its agent in a container (see docs/phase-10.md)
+	$(COMPOSE) --profile ai up -d --build --wait
 
 up-couriers: env ## Additionally start the workers for Delhivery, Safexpress, SkyKing, ABT and Balaji (see docs/indian-couriers.md)
 	$(COMPOSE) --profile couriers up -d --build --wait

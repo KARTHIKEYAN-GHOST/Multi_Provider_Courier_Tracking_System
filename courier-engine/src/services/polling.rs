@@ -46,6 +46,26 @@ pub async fn schedule_next_poll(
     Ok(())
 }
 
+/// How long a lookup held back by a repair waits before the scheduler looks again.
+const REPAIR_RECHECK_SECONDS: i32 = 300;
+
+/// Holds a shipment's lookup back while its provider's adapter is being repaired. Unlike the
+/// ordinary schedule this does not depend on the provider's poll policy: a lookup somebody
+/// asked for must happen once, also for a provider that is never polled.
+pub async fn defer_for_repair(
+    conn: &mut PgConnection,
+    shipment_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE shipments SET next_poll_at = clock_timestamp() + $2 * interval '1 second' WHERE id = $1",
+    )
+    .bind(shipment_id)
+    .bind(REPAIR_RECHECK_SECONDS)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Like `schedule_next_poll`, but leaves an already scheduled lookup where it is.
 pub async fn schedule_next_poll_if_unset(
     conn: &mut PgConnection,
@@ -125,6 +145,14 @@ pub async fn poll_due(pool: &PgPool, limit: i64) -> Result<PollStats, sqlx::Erro
             continue;
         }
         let target = db::providers::dispatch_target_by_id(&mut tx, shipment.provider_id).await?;
+        if target
+            .as_ref()
+            .is_some_and(|t| t.blocked_reason().is_none() && t.under_repair)
+        {
+            defer_for_repair(&mut tx, shipment.id).await?;
+            stats.postponed += 1;
+            continue;
+        }
         let job_id = match target {
             // A disabled provider, a missing credential or withdrawn scraping permission
             // pauses polling; it resumes by itself once the provider is available again.

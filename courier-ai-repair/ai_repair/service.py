@@ -1,15 +1,16 @@
-"""One task from start to finish: clone, ask the model, check, test in the sandbox, publish.
+"""One task from start to finish: clone, let the agent work, check, publish.
 
 The order matters and is the safety design:
 
  1. a fresh clone of the repository, so nothing local can leak in or be damaged;
  2. the provider's answers are scrubbed before they go anywhere;
- 3. the model proposes whole files;
- 4. ``guard`` checks the proposal before a single file is written;
- 5. the adapter's tests, the linter and the type checker run in the sandbox (no network,
-    no secrets); a failure goes back to the model, a limited number of times;
- 6. only what passed is committed, and only the files that belong to the task;
- 7. the commit is pushed, and the Engine is told the outcome.
+ 3. the agent works in steps (``agent``): it looks, writes the adapter's files and runs the
+    checks; the model is used nowhere else;
+ 4. ``guard`` checks what it wrote, and the adapter's tests, the linter and the type checker
+    run in the sandbox (no network, no secrets). The agent can ask for this as often as
+    its steps allow; it cannot skip it;
+ 5. only what passed is committed, and only the files that belong to the task;
+ 6. the commit is pushed, and the Engine is told the outcome.
 """
 
 from __future__ import annotations
@@ -22,10 +23,13 @@ from typing import Any
 import structlog
 
 from . import guard, prompts
+from .agent import Agent, AgentGaveUp, Net, Toolbox
+from .agent.browser import Browser
+from .agent.net import origins_in
 from .config import Settings
 from .engine import Task
 from .guard import ADAPTERS, TESTS, ProposedFile, Rejected
-from .llm import Model, ModelError, parse_proposal
+from .llm import Model, ModelError
 from .sandbox import Sandbox
 from .scaffold import ProviderSpec, ScaffoldError, scaffold
 from .scrub import scrub
@@ -123,7 +127,7 @@ class Repairer:
                 return f"{name} failed:\n{output[-5000:]}"
         return None
 
-    def _propose_until_accepted(
+    def _agent_until_accepted(
         self,
         ws: Workspace,
         key: str,
@@ -132,52 +136,46 @@ class Repairer:
         before: dict[str, str],
         fixtures: list[str],
     ) -> tuple[str, list[str]]:
-        """Asks the model, checks, tests; feeds problems back. Returns summary and written paths."""
-        messages = [{"role": "user", "content": first_message}]
-        problem = "the model was not asked"
-        for round_number in range(1, self._settings.ai_repair_max_rounds + 1):
+        """The agent works in steps until its work passes the checks. Summary and written paths."""
+        settings = self._settings
+        code = "\n".join(text for path, text in before.items() if path.startswith(ADAPTERS))
+        net = Net(hosts, origins_in(code), max_requests=settings.ai_repair_agent_max_requests)
+        accepted: list[str] = []
+
+        def verify(saved: list[str]) -> str | None:
+            """The gate: the code rules first, then the sandboxed checks."""
+            paths = [path for path in ws.changed() if guard.kind_of(path, key)]
+            if not paths:
+                return "Nothing was written yet."
+            required = [*fixtures, *saved]
             try:
-                answer = self._model.complete(prompts.SYSTEM, messages)
-            except ModelError as error:
-                if not error.retryable:
-                    raise
-                # No usable answer this time (a busy or weak model). Asking again costs a round.
-                problem = f"the model gave no usable answer: {error}"
-                log.info("proposal_not_accepted", adapter=key, round=round_number, problem=problem[:300])
-                continue
-            self._used = str(getattr(self._model, "last_model", self._model.name))
-            log.info("model_answered", adapter=key, round=round_number, model=self._used)
-            try:
-                proposal = parse_proposal(answer)
-                # Models like to send the fixture files back. They exist already, written by
-                # this service from the real answers; a copy from the model is ignored.
-                fixture_dir = f"{TESTS}/fixtures/{key}/"
-                proposal.files[:] = [f for f in proposal.files if not f.path.startswith(fixture_dir)]
-                guard.check_proposal(proposal.files, key, hosts, before=before, fixtures=fixtures)
-            except (ModelError, Rejected) as error:
-                problem = f"rejected before running: {error}"
-            else:
-                for path in [p for p in ws.changed() if guard.kind_of(p, key)]:
-                    ws.discard(path, before.get(path))
-                for file in proposal.files:
-                    ws.write(file.path, file.content)
-                paths = [file.path for file in proposal.files]
+                files = [ProposedFile(path, ws.read(path) or "") for path in paths]
+                guard.check_proposal(files, key, hosts, before=before, fixtures=required)
                 failed = self._checks(ws, key, paths)
                 if failed is None:
                     # The formatter rewrote the files: what is committed is checked once more.
                     final = [ProposedFile(path, ws.read(path) or "") for path in paths]
-                    guard.check_proposal(final, key, hosts, before=before, fixtures=fixtures)
-                    return proposal.summary.strip()[:300] or "no summary given", paths
-                problem = failed
-            log.info("proposal_not_accepted", adapter=key, round=round_number, problem=problem[:300])
-            messages += [
-                {"role": "assistant", "content": answer[:60_000]},
-                {"role": "user", "content": prompts.retry(problem)},
-            ]
-        raise TaskFailed(
-            f"no acceptable proposal after {self._settings.ai_repair_max_rounds} rounds; last problem: "
-            f"{problem[:1200]}"
-        )
+                    guard.check_proposal(final, key, hosts, before=before, fixtures=required)
+            except Rejected as error:
+                return f"rejected by the code rules: {error}"
+            if failed is None:
+                accepted[:] = paths
+            return failed
+
+        browser = Browser(net) if settings.ai_repair_agent_browser else None
+        tools = Toolbox(ws, key, net, verify, browser=browser)
+        agent = Agent(self._model, prompts.AGENT_SYSTEM, max_steps=settings.ai_repair_agent_max_steps)
+        try:
+            summary = agent.run(
+                prompts.agent_task(first_message, hosts, browser=browser is not None), tools, label=key
+            )
+        except AgentGaveUp as error:
+            raise TaskFailed(str(error)) from None
+        finally:
+            self._used = agent.used
+            tools.close()
+        log.info("agent_finished", adapter=key, steps=agent.steps, model=self._used)
+        return summary, [*accepted, *tools.fixtures.values()]
 
     # ------------------------------------------------------------------ the two kinds of task
 
@@ -209,7 +207,7 @@ class Repairer:
             if f"adapters.{key}" in content and f"{TESTS}/{file.name}" not in before:
                 context[f"{TESTS}/{file.name}"] = content
         message = prompts.repair(key, before, context, failures, hosts)
-        summary, paths = self._propose_until_accepted(ws, key, message, hosts, before, fixture_names)
+        summary, paths = self._agent_until_accepted(ws, key, message, hosts, before, fixture_names)
         version = guard.adapter_version(ws.read(f"{ADAPTERS}/{key}/adapter.py") or "") or "?"
         return summary, [*paths, *fixture_paths], f"AI repair: {key} adapter {version}"
 
@@ -239,7 +237,7 @@ class Repairer:
         message = prompts.new_provider(
             key, spec.name, spec.method, spec.hosts, spec.needs_credential, spec.notes, sample, reference
         )
-        summary, paths = self._propose_until_accepted(ws, key, message, set(spec.hosts), {}, fixture_names)
+        summary, paths = self._agent_until_accepted(ws, key, message, set(spec.hosts), {}, fixture_names)
         return summary, [*paths, *fixture_paths, *scaffolded], f"AI: new adapter for {spec.name} ({key})"
 
     # ------------------------------------------------------------------ entry

@@ -49,6 +49,11 @@ impl From<DispatchError> for ApiError {
                 message: "the provider cannot be used at the moment: it is disabled, not authorized \
                           for scraping, or has no credential stored",
             },
+            DispatchError::UnderRepair => ApiError::Conflict {
+                code: "provider_under_repair",
+                message: "the adapter for this provider is being repaired; the lookup starts by \
+                          itself when the repair has ended",
+            },
             DispatchError::Database(e) => e.into(),
         }
     }

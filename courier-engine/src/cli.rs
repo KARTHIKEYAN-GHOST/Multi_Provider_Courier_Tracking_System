@@ -51,6 +51,14 @@ enum AdminCommand {
         #[arg(long)]
         email: String,
     },
+    /// Make a user a staff member, who sees and answers every open challenge (one-time codes,
+    /// CAPTCHAs), or take that away again
+    SetStaff {
+        #[arg(long)]
+        email: String,
+        #[arg(long, action = clap::ArgAction::Set)]
+        staff: bool,
+    },
     /// Create an additional API key for an existing user (shown once)
     CreateApiKey {
         #[arg(long)]
@@ -381,6 +389,21 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
             println!("user_id: {user_id}");
             println!("api_key: {key}");
             println!("Store this key now. It cannot be shown again.");
+        }
+        AdminCommand::SetStaff { email, staff } => {
+            let email = normalize_email(&email)?;
+            let changed = sqlx::query(
+                "UPDATE users SET is_staff = $2, updated_at = now() WHERE lower(email) = lower($1)",
+            )
+            .bind(&email)
+            .bind(staff)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            if changed == 0 {
+                bail!("no user with this email");
+            }
+            println!("{email}: staff = {staff}");
         }
         AdminCommand::CreateApiKey { email, name } => {
             let email = normalize_email(&email)?;
