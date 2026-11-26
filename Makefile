@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs
+.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -130,3 +130,6 @@ test-e2e: env ## End-to-end: real Engine + worker processes on a private databas
 	cd tests-e2e && uv run ruff format --check . && uv run ruff check . && uv run pytest
 
 test: test-contracts test-engine test-adapters test-human-interface test-ai-repair test-e2e ## Run every test suite
+
+auto-update: ## Follow GitHub: pull new commits (e.g. adapters pushed by the AI), check them and redeploy; runs until Ctrl+C
+	infrastructure/auto-update.sh

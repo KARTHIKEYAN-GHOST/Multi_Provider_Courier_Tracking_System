@@ -62,9 +62,14 @@ def valid_key(key: str) -> bool:
     return bool(_KEY.match(key))
 
 
+def test_paths(key: str) -> tuple[str, str]:
+    """The adapter's test file, and the file that collects tests added by repairs."""
+    return f"{TESTS}/test_{key}_adapter.py", f"{TESTS}/test_{key}_repairs.py"
+
+
 def kind_of(path: str, key: str) -> str | None:
     """``"adapter"``, ``"test"`` or ``None`` when the model may not write this path."""
-    if path == f"{TESTS}/test_{key}_adapter.py":
+    if path in test_paths(key):
         return "test"
     prefix = f"{ADAPTERS}/{key}/"
     if path.startswith(prefix) and _MODULE_FILE.match(path[len(prefix) :]):
@@ -90,8 +95,38 @@ def _host_allowed(host: str, allowed: set[str], kind: str) -> bool:
     return kind == "test" and (host in _TEST_ONLY_HOSTS or host.endswith((".example", ".test", ".invalid")))
 
 
-def check_python(file: ProposedFile, key: str, allowed_hosts: set[str]) -> None:
-    """Raises ``Rejected`` unless the file keeps every rule."""
+def imported_modules(source: str) -> frozenset[str]:
+    """Absolute module names a piece of code imports ("" when it cannot be parsed)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module)
+    return frozenset(names)
+
+
+def imported_modules_of_parts(before: dict[str, str], key: str) -> frozenset[str]:
+    """What the adapter's existing test files import."""
+    found: frozenset[str] = frozenset()
+    for path in test_paths(key):
+        found |= imported_modules(before.get(path, ""))
+    return found
+
+
+def check_python(
+    file: ProposedFile, key: str, allowed_hosts: set[str], *, previous: str | None = None
+) -> None:
+    """Raises ``Rejected`` unless the file keeps every rule.
+
+    ``previous`` is the file's current content, if it exists. What that version already
+    imports, and the hosts it already names, were written or accepted by a person and stay
+    allowed in this file; everything else in the new version must keep the rules.
+    """
     kind = kind_of(file.path, key)
     if kind is None:
         raise Rejected(f"{file.path}: only the adapter's own files and its test file may be written")
@@ -102,6 +137,10 @@ def check_python(file: ProposedFile, key: str, allowed_hosts: set[str]) -> None:
     except SyntaxError as error:
         raise Rejected(f"{file.path}: not valid Python (line {error.lineno})") from None
     imports = _TEST_IMPORTS if kind == "test" else _ADAPTER_IMPORTS
+    if previous is not None:
+        # "os" is never widened this way: its use is checked name by name below.
+        imports = imports | (imported_modules(previous) - {"subprocess", "socket", "ctypes", "importlib"})
+        allowed_hosts = allowed_hosts | hosts_in(previous)
     env_prefix = key.upper() + "_"
 
     # The only permitted use of the name "os" is as the start of "os.environ".
@@ -123,7 +162,7 @@ def check_python(file: ProposedFile, key: str, allowed_hosts: set[str]) -> None:
             if node.level == 0:
                 if not _module_allowed(node.module or "", imports, key, kind):
                     raise Rejected(f"{where}: module '{node.module}' may not be imported")
-                if node.module == "os":
+                if node.module == "os" or (node.module or "").startswith("os."):
                     raise Rejected(f"{where}: write 'import os'; nothing may be imported from it")
             elif kind == "adapter":
                 # ``.parser`` is the adapter's own package; ``..india`` / ``..tables`` are shared.
@@ -222,14 +261,25 @@ def check_proposal(
     paths = [file.path for file in files]
     if len(set(paths)) != len(paths):
         raise Rejected("a file was proposed twice")
+    # A new test file of an adapter inherits what the adapter's existing tests already use.
+    existing_tests = "\n".join(before.get(path, "") for path in test_paths(key))
     for file in files:
-        check_python(file, key, allowed_hosts)
+        previous = before.get(file.path)
+        if previous is None and existing_tests.strip() and kind_of(file.path, key) == "test":
+            previous = (
+                "\n".join(f"import {name}" for name in sorted(imported_modules_of_parts(before, key)))
+                + "\n"
+                + "\n".join(f'"http://{host}/"' for host in sorted(hosts_in(existing_tests)))
+            )
+        check_python(file, key, allowed_hosts, previous=previous)
 
     after = {**before, **{file.path: file.content for file in files}}
-    adapter_path, test_path = f"{ADAPTERS}/{key}/adapter.py", f"{TESTS}/test_{key}_adapter.py"
-    for needed in (adapter_path, f"{ADAPTERS}/{key}/__init__.py", f"{ADAPTERS}/{key}/__main__.py", test_path):
+    adapter_path = f"{ADAPTERS}/{key}/adapter.py"
+    for needed in (adapter_path, f"{ADAPTERS}/{key}/__init__.py", f"{ADAPTERS}/{key}/__main__.py"):
         if needed not in after:
             raise Rejected(f"{needed} is missing")
+    if not any(path in after for path in test_paths(key)):
+        raise Rejected(f"{test_paths(key)[0]} is missing")
     adapter = after[adapter_path]
     if _class_constant(adapter, "key") != key:
         raise Rejected(f'{adapter_path}: the adapter class must have key = "{key}"')
@@ -241,9 +291,22 @@ def check_proposal(
     if "keep_evidence(" not in adapter:
         raise Rejected(f"{adapter_path}: call ctx.keep_evidence(response) before reading the answer")
 
-    tests = after[test_path]
-    if len(test_names(tests)) < max(3, len(test_names(before.get(test_path, "")))):
-        raise Rejected(f"{test_path}: has fewer tests than before (or fewer than three)")
+    # The adapter's tests, in one or both of its test files, counted together.
+    count = sum(len(test_names(after.get(path, ""))) for path in test_paths(key))
+    count_before = sum(len(test_names(before.get(path, ""))) for path in test_paths(key))
+    if count < max(3, count_before):
+        raise Rejected(
+            f"the adapter has {count} tests; it had {count_before} and needs at least "
+            f"{max(3, count_before)} (fewer tests than before, or fewer than three)"
+        )
+    # An existing test file may be corrected (a test that expected the old failure has to
+    # change, and may get a truer name) but never thinned out.
+    for path in test_paths(key):
+        had, has = len(test_names(before.get(path, ""))), len(test_names(after.get(path, "")))
+        if has < had:
+            raise Rejected(f"{path} had {had} tests and would have {has}: existing tests were removed")
+    tests = "".join(after.get(path, "") for path in test_paths(key))
     for name in fixtures:
-        if name not in tests:
-            raise Rejected(f"{test_path}: must test the adapter against the fixture file {name}")
+        # By its name without the ending too: test files often have a helper that adds it.
+        if name.rsplit(".", 1)[0] not in tests:
+            raise Rejected(f"the tests must test the adapter against the fixture file {name}")

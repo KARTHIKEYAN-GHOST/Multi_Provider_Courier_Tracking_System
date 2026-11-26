@@ -82,6 +82,15 @@ def repair(
         "reads the recorded answers below correctly, and keep what it already did right.",
         f"Approved hosts: {', '.join(sorted(hosts)) or '(none)'}",
         "The adapter's files (you may replace these):\n\n" + _files(files),
+        "Send only the files you change: usually the parser, and adapter.py for the higher version. "
+        f"Do NOT send the existing test file back unless one of its tests must change. Put your new "
+        f"tests into courier-adapters/tests/test_{key}_repairs.py (if that file is shown above, send it "
+        "whole with your tests added). It must contain at least one test that reads each recorded "
+        "answer below from its fixture file and checks what the adapter makes of it. "
+        "Exception: if an existing test expects the very failure you are repairing (for example it "
+        "asserts that this new format raises SchemaDrift), that test is now wrong. Then you must send "
+        "the existing test file too, complete, with only that test corrected to expect the new "
+        "behaviour and every other test unchanged.",
     ]
     if context:
         parts.append("For reference only (you cannot change these):\n\n" + _files(context))

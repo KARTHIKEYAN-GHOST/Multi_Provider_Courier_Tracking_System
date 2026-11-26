@@ -60,7 +60,7 @@ BEFORE = {
     ADAPTER: OLD_ADAPTER,
     f"{ADAPTERS}/{KEY}/__init__.py": "",
     f"{ADAPTERS}/{KEY}/__main__.py": "",
-    TEST: "def test_a(): ...\ndef test_b(): ...\ndef test_c(): ...\n",
+    TEST: "def test_one(): ...\ndef test_two(): ...\ndef test_three(): ...\n",
 }
 
 
@@ -175,7 +175,7 @@ def test_the_whole_proposal_must_hang_together() -> None:
         check(adapter=GOOD_ADAPTER.replace("ctx.keep_evidence(response)", "pass"))
     with pytest.raises(Rejected, match='key = "acme"'):
         check(adapter=GOOD_ADAPTER.replace('= "acme"', '= "dhl"'))
-    with pytest.raises(Rejected, match="fewer tests"):
+    with pytest.raises(Rejected, match=r"fewer tests than before|existing tests were removed"):
         check(test=GOOD_TEST.replace("async def test_two() -> None: ...", ""))
     with pytest.raises(Rejected, match=r"fixture file unreadable_1\.json"):
         check(test=GOOD_TEST.replace("unreadable_1.json", "other.json"))
@@ -200,3 +200,115 @@ def test_a_new_adapter_must_bring_every_file_it_needs() -> None:
 def test_hosts_are_read_from_addresses() -> None:
     text = "see https://API.Acme.example:8443/a?b and http://user:pw@other.example/x, not example.org"
     assert hosts_in(text) == {"api.acme.example", "other.example"}
+
+
+def test_a_file_keeps_what_its_current_version_already_imports_and_names() -> None:
+    old_test = (
+        "import threading\nfrom demo_site.pages import render\n"
+        'SITE = "http://staging.acme.example"\n'
+        "def test_one(): ...\ndef test_two(): ...\ndef test_three(): ...\n"
+    )
+    new_test = (
+        GOOD_TEST
+        + "\nimport threading\nfrom demo_site.pages import render\n"
+        + 'S = "http://staging.acme.example/x"\n'
+    )
+    before = {**BEFORE, TEST: old_test}
+    files = [ProposedFile(ADAPTER, GOOD_ADAPTER), ProposedFile(TEST, new_test)]
+    check_proposal(files, KEY, HOSTS, before=before, fixtures=["unreadable_1.json"])
+    # ... but nothing beyond that, and not in the other file.
+    for extra in ("import shutil", 'S2 = "http://collector.evil.net/"'):
+        with pytest.raises(Rejected):
+            check_proposal(
+                [files[0], ProposedFile(TEST, new_test + extra + "\n")],
+                KEY,
+                HOSTS,
+                before=before,
+                fixtures=[],
+            )
+    with pytest.raises(Rejected, match="threading"):
+        check_proposal(
+            [ProposedFile(ADAPTER, GOOD_ADAPTER + "\nimport threading\n"), files[1]],
+            KEY, HOSTS, before=before, fixtures=[],
+        )  # fmt: skip
+    # Modules that start programs or open connections are never inherited.
+    dangerous = {**before, TEST: old_test + "import subprocess\n"}
+    with pytest.raises(Rejected, match="subprocess"):
+        check_proposal(
+            [files[0], ProposedFile(TEST, new_test + "import subprocess\n")],
+            KEY,
+            HOSTS,
+            before=dangerous,
+            fixtures=[],
+        )
+
+
+def _existing_adapters() -> list[str]:
+    from .conftest import ROOT
+
+    return sorted(
+        p.parent.name
+        for p in (ROOT / ADAPTERS).glob("*/adapter.py")
+        if p.parent.name != "dummy" and (ROOT / TESTS / f"test_{p.parent.name}_adapter.py").exists()
+    )
+
+
+@pytest.mark.parametrize("key", _existing_adapters())
+def test_every_existing_adapter_could_be_repaired_without_breaking_the_rules(key: str) -> None:
+    """The current code of each adapter, resubmitted with a higher version, must be acceptable:
+    otherwise a repair that keeps the existing code could never get through."""
+    import re
+
+    from ai_repair.guard import hosts_in as hosts
+
+    from .conftest import ROOT
+
+    before = {
+        f"{ADAPTERS}/{key}/{p.name}": p.read_text() for p in sorted((ROOT / ADAPTERS / key).glob("*.py"))
+    }
+    test = f"{TESTS}/test_{key}_adapter.py"
+    before[test] = (ROOT / test).read_text()
+    adapter = f"{ADAPTERS}/{key}/adapter.py"
+    bumped = re.sub(r'(version: ClassVar\[str\] = ")\d+\.\d+\.\d+', r"\g<1>9.9.9", before[adapter])
+    files = [ProposedFile(path, bumped if path == adapter else text) for path, text in before.items()]
+    allowed = set().union(*(hosts(text) for path, text in before.items() if path.startswith(ADAPTERS)))
+    check_proposal(files, key, allowed, before=before, fixtures=[])
+
+
+def test_a_repair_may_add_its_tests_in_a_separate_file_and_leave_the_big_one_alone() -> None:
+    repairs = f"{TESTS}/test_{KEY}_repairs.py"
+    assert kind_of(repairs, KEY) == "test"
+    new_tests = GOOD_TEST.replace("test_one", "test_recorded_1").replace("test_two", "test_recorded_2")
+    new_tests = new_tests.replace("test_three", "test_recorded_3")
+    files = [ProposedFile(ADAPTER, GOOD_ADAPTER), ProposedFile(repairs, new_tests)]
+    check_proposal(files, KEY, HOSTS, before=BEFORE, fixtures=["unreadable_1.json"])
+    # Without a test that uses the recorded answer it is not a repair.
+    with pytest.raises(Rejected, match=r"fixture file unreadable_1\.json"):
+        check_proposal(files[:1], KEY, HOSTS, before=BEFORE, fixtures=["unreadable_1.json"])
+    # Emptying the existing test file is still refused.
+    gutted = [*files, ProposedFile(TEST, "x = 1\n")]
+    with pytest.raises(Rejected, match="had 3 tests and would have 0: existing tests were removed"):
+        check_proposal(gutted, KEY, HOSTS, before=BEFORE, fixtures=["unreadable_1.json"])
+    with pytest.raises(Rejected, match="fewer tests than before"):
+        check_proposal([files[0], ProposedFile(TEST, "x = 1\n")], KEY, HOSTS, before=BEFORE, fixtures=[])
+
+
+def test_the_recorded_answer_may_be_named_without_its_ending_and_new_test_files_inherit_imports() -> None:
+    old_test = "import threading\ndef test_one(): ...\ndef test_two(): ...\ndef test_three(): ...\n"
+    before = {**BEFORE, TEST: old_test}
+    repairs = ProposedFile(
+        f"{TESTS}/test_{KEY}_repairs.py",
+        'import threading\n\n\ndef test_new() -> None:\n    page("unreadable_1")\n',
+    )
+    check_proposal(
+        [ProposedFile(ADAPTER, GOOD_ADAPTER), repairs],
+        KEY,
+        HOSTS,
+        before=before,
+        fixtures=["unreadable_1.json"],
+    )
+    with pytest.raises(Rejected, match="shutil"):
+        check_proposal(
+            [ProposedFile(ADAPTER, GOOD_ADAPTER), ProposedFile(repairs.path, "import shutil\n" + repairs.content)],  # noqa: E501
+            KEY, HOSTS, before=before, fixtures=["unreadable_1.json"],
+        )  # fmt: skip

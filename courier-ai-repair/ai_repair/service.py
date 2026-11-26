@@ -58,9 +58,10 @@ def _adapter_files(ws: Workspace, key: str) -> dict[str, str]:
         content = ws.read(f"{ADAPTERS}/{key}/{file.name}")
         if content is not None:
             found[f"{ADAPTERS}/{key}/{file.name}"] = content
-    test = ws.read(f"{TESTS}/test_{key}_adapter.py")
-    if test is not None:
-        found[f"{TESTS}/test_{key}_adapter.py"] = test
+    for path in guard.test_paths(key):
+        test = ws.read(path)
+        if test is not None:
+            found[path] = test
     return found
 
 
@@ -92,7 +93,11 @@ class Repairer:
         python, _ = self._python(ws)
         adapters = ws.repo / "courier-adapters"
         local = [path.removeprefix("courier-adapters/") for path in python_files]
-        test = f"tests/test_{key}_adapter.py"
+        tests = [
+            path.removeprefix("courier-adapters/")
+            for path in guard.test_paths(key)
+            if ws.read(path) is not None
+        ]
         timeout = self._settings.ai_repair_sandbox_timeout_s
 
         def run(arguments: list[str], *, writable: bool = False) -> tuple[bool, str]:
@@ -107,9 +112,9 @@ class Repairer:
         steps = [
             ("ruff check", ["-m", "ruff", "check", "--no-cache", "--output-format", "concise", *local]),
             ("mypy", ["-m", "mypy", "--cache-dir", "/tmp/mypy", "--no-error-summary",
-                      f"adapters/{key}", test]),
+                      f"adapters/{key}", *tests]),
             # The adapter's own tests, and the SDK tests every adapter must keep passing.
-            ("pytest", ["-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "--no-header", test,
+            ("pytest", ["-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "--no-header", *tests,
                         "tests/test_evidence.py", "tests/test_contracts.py"]),
         ]  # fmt: skip
         for name, arguments in steps:

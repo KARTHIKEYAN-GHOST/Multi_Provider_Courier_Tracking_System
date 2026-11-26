@@ -589,7 +589,7 @@ M("parse_packages (adapters/delhivery/parser.py)",
 # ---------------------------------------------------------------- 15
 H1("15. Phase 9: the AI repair service")
 P("When an adapter can no longer read its courier's answers, or a courier has no adapter yet, an AI model writes the code. "
-  "A separate program, the repair service, checks that code, tests it in a sandbox and pushes it to the main branch on GitHub; other devices get it with git pull. "
+  "A separate program, the repair service, checks that code, tests it in a sandbox and pushes it to the main branch on GitHub; other devices get it by themselves when make auto-update is left running there (it pulls new commits every two minutes, checks them and redeploys), or by hand with git pull. "
   "Nobody reviews the code before it reaches main: that was chosen for this phase, and the automatic checks are the only gate. Full details are in docs/phase-9.md.")
 H2("The path of a repair")
 B("The adapter calls ctx.keep_evidence(response) on the courier's answer. If the lookup fails with PARSE_ERROR or SCHEMA_DRIFT, the worker sends that answer along with the failure.",
@@ -646,7 +646,7 @@ B("The tests are written by the same model as the code. An adapter can pass them
 # ---------------------------------------------------------------- 16
 H1("16. Current state, open points and what comes next")
 H2("Verified")
-B("929 automated tests pass: 99 contract, 189 Engine, 446 adapter, 29 human-interface, 109 AI repair service, 57 end-to-end.",
+B("942 automated tests pass: 99 contract, 189 Engine, 450 adapter, 29 human-interface, 118 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")

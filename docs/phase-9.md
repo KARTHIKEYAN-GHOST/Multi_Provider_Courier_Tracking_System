@@ -74,13 +74,18 @@ two hours.
 
 Fixed rules, applied to the proposed files before one of them is written to disk:
 
-- **Files.** Only `courier-adapters/adapters/<key>/*.py` and
-  `courier-adapters/tests/test_<key>_adapter.py`. Not the SDK, not another adapter, not the
+- **Files.** Only `courier-adapters/adapters/<key>/*.py`,
+  `courier-adapters/tests/test_<key>_adapter.py` and
+  `courier-adapters/tests/test_<key>_repairs.py` (where a repair adds its tests, so that it
+  need not send a long existing test file back). Not the SDK, not another adapter, not the
   Engine, not CI, not configuration.
 - **Imports.** An exact list: `os`, `re`, `typing`, `datetime`, `json`, `dataclasses`,
   `httpx`, `bs4`, the adapter SDK's public modules, the shared helpers `india` and
   `tables`, and the adapter's own modules. Tests may also use `pytest`, `pathlib`,
-  `base64`, `urllib.parse` and the shared test helper.
+  `base64`, `urllib.parse` and the shared test helper. A file that already exists keeps
+  what its current version imports and the hosts it names (a person wrote or accepted
+  those), except modules that start programs or open connections. A test in
+  `tests/test_guard.py` proves that every existing adapter could be repaired within the rules.
 - **No escape hatches.** `eval`, `exec`, `open`, `getattr`, `__import__`, attributes that
   start with two underscores, file writing, starting programs.
 - **Hosts.** Every web address written in the code must belong to the adapter's existing
@@ -89,7 +94,8 @@ Fixed rules, applied to the proposed files before one of them is written to disk
 - **Environment.** Only `os.environ.get("<KEY>_…")`. A worker's token or the session key
   cannot be read.
 - **Shape.** The adapter keeps its key, raises its version, still calls `keep_evidence`;
-  the test file does not lose tests and must use the recorded answers as fixtures.
+  no existing test disappears (tests are compared by name), and the tests must use the
+  recorded answers as fixtures.
 
 ### The sandbox (`ai_repair/sandbox.py`)
 
@@ -247,6 +253,33 @@ reported as failed with the note "dry run". Set `AI_REPAIR_DRY_RUN=false` in `.e
 finished work should really be pushed.
 
 ### On the other devices
+
+Nobody has to watch GitHub. On every device that runs the system, leave this running:
+
+```bash
+make auto-update                       # or: make auto-update DOCKER="sudo docker"
+```
+
+`infrastructure/auto-update.sh` looks at GitHub every two minutes. When `main` has new
+commits it lists them, fast-forwards this checkout, runs the contract and adapter checks
+(`make test-contracts test-adapters`, about half a minute) and, if they pass, runs
+`make up`, which rebuilds the images and restarts what changed.
+
+- It only fast-forwards. Local commits or changes that stand in the way are never
+  discarded: it says so and waits for you.
+- If the checks fail, the new code is in the folder but is **not** deployed; what is
+  running stays as it was, and it waits for a newer commit. This is the only check a
+  second device makes of code that no person reviewed.
+- If deploying fails (Docker or the network), it tries again at the next look.
+- `AUTO_UPDATE_INTERVAL_S`, `AUTO_UPDATE_CHECK`, `AUTO_UPDATE_DEPLOY` and
+  `AUTO_UPDATE_BRANCH` change the interval, the checks, the deploy command and the branch.
+  `infrastructure/auto-update.sh --once` looks once and exits (for cron or a systemd timer).
+- With `sudo docker`, `sudo` asks for the password again when its grace period is over,
+  so an unattended device needs Docker usable without `sudo`.
+- The worker of a **new** provider is in the `couriers` profile and is not started by
+  `make up`; start it with `make up-couriers` once the provider may be used.
+
+By hand it is the same two steps:
 
 ```bash
 git pull
