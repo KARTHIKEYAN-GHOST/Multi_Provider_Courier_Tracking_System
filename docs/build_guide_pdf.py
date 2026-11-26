@@ -683,7 +683,7 @@ P("make up-ai starts the repair service as a container with the browser and the 
 # ---------------------------------------------------------------- 17
 H1("17. Current state, open points and what comes next")
 H2("Verified")
-B("957 automated tests pass: 99 contract, 192 Engine, 450 adapter, 29 human-interface, 130 AI repair service, 57 end-to-end.",
+B("958 automated tests pass: 99 contract, 192 Engine, 450 adapter, 29 human-interface, 131 AI repair service, 57 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")

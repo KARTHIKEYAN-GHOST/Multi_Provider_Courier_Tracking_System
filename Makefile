@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai
+.PHONY: check-ai check-ai-push help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -40,6 +40,14 @@ up-dhl: env ## Additionally start the DHL worker (needs CREDENTIAL_MASTER_KEY an
 
 up-ai: env ## Additionally start the AI repair service with its agent in a container (see docs/phase-10.md)
 	$(COMPOSE) --profile ai up -d --build --wait
+
+check-ai: ## Check the running AI repair container without any model: sandbox and browser (needs make up-ai)
+	tar --exclude=.venv --exclude=__pycache__ --exclude='.*_cache' -cf - courier-adapters courier-contracts \
+		| $(DOCKER) exec -i courier-ai-repair-1 sh -c 'rm -rf /tmp/selfcheck && mkdir /tmp/selfcheck && tar -C /tmp/selfcheck -xf -'
+	$(DOCKER) exec courier-ai-repair-1 /app/courier-ai-repair/.venv/bin/python -m ai_repair.selfcheck /tmp/selfcheck "http://demo-site:8090/track?number=DEMO-OK-1" $(SELFCHECK_FLAGS)
+
+check-ai-push: ## Like check-ai, and also PUSHES one small test file to GitHub the way a finished repair does
+	$(MAKE) check-ai SELFCHECK_FLAGS=--push
 
 up-couriers: env ## Additionally start the workers for Delhivery, Safexpress, SkyKing, ABT and Balaji (see docs/indian-couriers.md)
 	$(COMPOSE) --profile couriers up -d --build --wait

@@ -181,6 +181,24 @@ code and the browser's own sandbox create user namespaces, which the default fil
 first `make up-ai`, check the log (`sudo docker logs courier-ai-repair-1`): the service
 refuses to start if the sandbox does not work, and says so.
 
+To check the running container without any model:
+
+```bash
+make check-ai DOCKER="sudo docker"
+```
+
+It runs the demo-site adapter's checks in the sandbox inside the container, confirms that
+the sandbox has no network, no secrets and no view of the service, opens a page in the
+agent's browser, clones the repository from GitHub and makes a commit in the clone (nothing
+is pushed), and asks the model one short question. A model that does not answer is reported
+as a note, not as a failure: it is the supplier's state.
+
+`make check-ai-push DOCKER="sudo docker"` does the same and also pushes one small test file
+(`courier-adapters/adapters/demosite/push_check.txt`) to the branch, the way a finished
+repair pushes its work. Follow it with `infrastructure/auto-update.sh --once` to see the
+commit arrive on this device, then delete the file. Inside a container the kernel refuses the sandbox a `/proc` of its own; the
+sandbox then has none at all, and the container's is never shown to it.
+
 ## Not built yet
 
 - Assigning a challenge to one person at a time (two may open the same one; the second

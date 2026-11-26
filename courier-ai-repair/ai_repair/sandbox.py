@@ -52,25 +52,32 @@ def python_roots(venv: Path) -> list[Path]:
 
 
 class Bubblewrap:
-    def __init__(self, readonly: list[Path] | None = None) -> None:
+    def __init__(self, readonly: list[Path] | None = None, *, proc: bool | None = None) -> None:
         program = shutil.which("bwrap")
         if program is None:
             raise SandboxUnavailable("bubblewrap (bwrap) is not installed")
         self._program = program
         #: Extra read-only directories: the Python installation the environment points to.
         self._readonly = list(readonly or [])
-        probe = subprocess.run(
-            [program, "--unshare-all", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
-             "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "/usr/bin/true"],
-            capture_output=True, timeout=20, check=False,
-        )  # fmt: skip
-        if probe.returncode != 0:
+        base = [program, "--unshare-all", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
+                "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64"]  # fmt: skip
+
+        def works(*extra: str) -> bool:
+            probe = subprocess.run(
+                [*base, *extra, "/usr/bin/true"], capture_output=True, timeout=20, check=False
+            )
+            return probe.returncode == 0
+
+        if not works():
             raise SandboxUnavailable("bubblewrap cannot create a sandbox on this machine")
+        #: Inside a container the kernel refuses a new /proc (the container's own is partly
+        #: covered). The sandbox then has none at all: the outer /proc is never shown to it.
+        self.proc = works("--proc", "/proc") if proc is None else proc
 
     def _arguments(self, repo: Path, cwd: Path, writable: bool) -> list[str]:
         arguments = [
             self._program, "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
-            "--ro-bind", "/usr", "/usr", "--proc", "/proc", "--dev", "/dev",
+            "--ro-bind", "/usr", "/usr", *(("--proc", "/proc") if self.proc else ()), "--dev", "/dev",
             "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/run",
         ]  # fmt: skip
         for name in ("bin", "sbin", "lib", "lib32", "lib64"):

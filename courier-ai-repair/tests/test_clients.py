@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -214,3 +215,16 @@ def test_a_task_in_work_is_handed_back_when_the_service_is_stopped() -> None:
     with pytest.raises(KeyboardInterrupt):
         run_once(engine, Stopped())  # type: ignore[arg-type]
     assert engine.reported == [("t1", "the repair service was stopped while working on this task")]
+
+
+def test_the_sandbox_also_works_where_the_kernel_refuses_a_new_proc(tmp_path: Path) -> None:
+    """Inside a container /proc cannot be mounted: the sandbox then has none, never the outer one."""
+    from ai_repair.sandbox import Bubblewrap, SandboxUnavailable
+
+    try:
+        sandbox = Bubblewrap(proc=False)
+    except SandboxUnavailable as error:
+        pytest.skip(f"no sandbox on this machine: {error}")
+    listing = sandbox.run(["/usr/bin/ls", "/proc"], repo=tmp_path, cwd=tmp_path, timeout_s=20)
+    assert not listing.ok or listing.output.strip() == ""
+    assert sandbox.run(["/usr/bin/true"], repo=tmp_path, cwd=tmp_path, timeout_s=20).ok
