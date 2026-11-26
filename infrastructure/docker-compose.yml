@@ -325,6 +325,22 @@ services:
       engine:
         condition: service_healthy
 
+  # The Professional Couriers (adapter written by the AI repair service). Started only on request.
+  adapter-professional:
+    profiles: ["couriers", "professional"]
+    build: *worker-build
+    image: courier-adapter-worker:local
+    command: ["-m", "adapters.professional"]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    environment:
+      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      WORKER_CONCURRENCY: ${PROFESSIONAL_WORKER_CONCURRENCY:-2}
+      LOG_FORMAT: json
+    depends_on:
+      engine:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   rabbitmq-data:
