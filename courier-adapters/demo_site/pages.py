@@ -93,6 +93,17 @@ def _redesigned_page(number: str) -> str:
     )
 
 
+def _scrambled_page(number: str) -> str:
+    """A page no version of the adapter knows: the site's markup changed beyond recognition.
+    (The redesigned page above was learned by an AI repair; this one stays unreadable, so the
+    end-to-end tests always have an answer that must be classified as a schema drift.)"""
+    rows = "".join(
+        f"<span data-k='{escape(status)}'>{when:%Y%m%d}/{escape(place)}</span>"
+        for when, status, place, _ in _history(number, 2)
+    )
+    return _layout(f"Tracking {number}", f'<main data-app="v3" data-rows="2">{rows}</main>')
+
+
 _verifications = Verifications()
 
 
@@ -172,6 +183,8 @@ def render(number: str) -> Page:
         return Page(403, _layout("Access denied", "<p>Automated access is not permitted.</p>"))
     if kind == "NEWLAYOUT":
         return Page(200, _redesigned_page(number))
+    if kind == "SCRAMBLED":
+        return Page(200, _scrambled_page(number))
     if kind == "BADDATE":
         return Page(200, _tracking_page(number, 2, date_format="%A week %W"))
     # Like many sites: "not found" is a normal page with status 200.

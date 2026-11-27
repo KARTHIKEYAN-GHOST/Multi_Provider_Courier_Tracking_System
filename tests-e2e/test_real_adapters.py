@@ -47,7 +47,7 @@ def test_scraping_outcomes_are_classified(stack: Stack, user: User) -> None:
     with stack.provider("demosite", retry_base_ms=200, max_attempts=2):
         requests = {
             kind: user.submit(number(kind, "DEMO"), "demosite")
-            for kind in ("TRANSIT", "NOTFOUND", "NEWLAYOUT", "BADDATE", "BLOCKED", "BUSY", "LIMIT")
+            for kind in ("TRANSIT", "NOTFOUND", "NEWLAYOUT", "SCRAMBLED", "BADDATE", "BLOCKED", "BUSY", "LIMIT")
         }
         jobs = {kind: user.wait_for(request_id, timeout_s=30) for kind, request_id in requests.items()}
 
@@ -58,8 +58,10 @@ def test_scraping_outcomes_are_classified(stack: Stack, user: User) -> None:
     assert summary("TRANSIT") == ("COMPLETED", "SUCCESS", 1)
     assert jobs["TRANSIT"]["shipment_status"] == "IN_TRANSIT"
     assert summary("NOTFOUND") == ("COMPLETED", "NOT_FOUND", 1)
-    # A redesigned page or an unreadable value will not fix itself: no retry.
-    assert summary("NEWLAYOUT") == ("FAILED", "SCHEMA_DRIFT", 1)
+    # The redesigned page was learned by an AI repair (demosite adapter 0.2.1).
+    assert summary("NEWLAYOUT") == ("COMPLETED", "SUCCESS", 1)
+    # A page no adapter version knows, or an unreadable value, will not fix itself: no retry.
+    assert summary("SCRAMBLED") == ("FAILED", "SCHEMA_DRIFT", 1)
     assert summary("BADDATE") == ("FAILED", "PARSE_ERROR", 1)
     assert summary("BLOCKED") == ("FAILED", "BLOCKED", 1)
     # An overloaded or rate-limiting site may recover: retried up to the limit.

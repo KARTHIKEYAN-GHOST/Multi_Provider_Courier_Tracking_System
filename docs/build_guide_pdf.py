@@ -762,9 +762,23 @@ M("services/repairs.rs: record_failure", "A changed login page or a site that no
   "Records AUTH_INVALID only if a lookup with the same login succeeded after it was stored, and NOT_FOUND only for shipments that have events; counts different shipments, not jobs.")
 
 # ---------------------------------------------------------------- 19
-H1("19. Current state, open points and what comes next")
+H1("19. The whole system tested live, with Claude")
+P("On 2026-11-27 everything ran together on one machine: the real Engine, real workers, PostgreSQL, RabbitMQ, Redis, the demo courier website, the AI repair service with Claude (claude-opus-5-5) pushing to GitHub, and the automatic update pulling, checking and deploying. The test used its own database (courier_systest), queue prefix and ports, so the development stack was not touched. The full report is docs/system-test.md.")
+T(["Scenario", "What happened", "Result"], [
+  ["Adapter exists and works", "dummy and demo-site lookups complete; the raw answer (whole HTML page or JSON) is in raw_tracking_responses, the formatted events (time, courier's text, normalized status, place) in tracking_events", "passed"],
+  ["One-time code and CAPTCHA", "the lookups wait; only an admin sees the challenges (an organization user gets 403); the owner answered both at the human interface; both lookups completed, also across a worker restart", "passed"],
+  ["Adapter breaks", "three shipments got a redesigned page (SCHEMA_DRIFT); the Engine opened a repair; Claude rewrote the parser (0.2.1) and its tests; pushed d71f99b; the automatic update pulled, checked and deployed it; the failed shipment and a new one then completed", "passed"],
+  ["No adapter", "Demo Express was inserted straight into the database; a request for it waited; the Engine opened a new_provider task; Claude built the adapter, parser, tests, queues, worker service and migration 0021; pushed fbf0678; deployed with its own worker token; the waiting request completed by itself", "passed"]],
+  [34, 110, 22])
+H2("Problems found")
+B("GitHub's checks failed on the AI's repair commit: two older tests assumed the demo-site adapter would never change (a fixed version 0.2.0, and the redesigned page as the example of an unreadable page). Both tests now follow the adapter; the demo site has a page no version can read, DEMO-SCRAMBLED-*. The automatic update had deployed the commit because it runs the contract and adapter checks only; the deployed adapter was right.",
+  "A repair task is left running when the AI service stops in the middle (here the test's own deploy script stopped it). The Engine hands it out again after two hours; it then finished on its second try.")
+
+# ---------------------------------------------------------------- 20
+H1("20. Current state, open points and what comes next")
 H2("Verified")
-B("974 automated tests pass: 99 contract, 210 Engine, 426 adapter, 31 human-interface, 149 AI repair service, 59 end-to-end.",
+B("1005 automated tests pass: 99 contract, 210 Engine, 456 adapter, 31 human-interface, 150 AI repair service, 59 end-to-end.",
+  "The whole system ran live with Claude: two adapters (a repair and a new courier) written, pushed, pulled and deployed with no person involved (chapter 19).",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
@@ -772,16 +786,18 @@ B("The Docker images and the full container stack (make up, make smoke) had not 
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
   "The AI repair service has written one adapter (The Professional Couriers) with a free model and pushed it to GitHub; that adapter has never read a real result page.",
-  "The agent of Phase 10 is tested with a stand-in model that answers from a script and with the real browser against the demo site. It has not yet completed a task with a real model; the Claude suppliers of Phase 11 are tested with stand-ins only.",
+  "The agent has completed real tasks with Claude only against the demo courier website (chapter 19); no real courier website has been built or repaired by it yet.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
-  "No real courier has been added and built end to end with Phase 12: the end-to-end test plays the AI repair service on the internal API and applies the scaffold's migration; the agent's login placeholders are tested with a stand-in model.",
+  "The courier's login through placeholders has been tested with a stand-in model only; the live test's couriers had no login.",
   "make deploy and make worker-tokens have been run only with a stand-in for Docker (worker-tokens needs Docker Compose 2.24 or newer).",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
 B("The dummy courier is created by migration 0008 in every database. Since Phase 6 the ENABLE_DUMMY_PROVIDER setting can switch it off.",
   "Test leftovers in the development PostgreSQL: a few smoke-test users and shipments in database courier, the database courier_e2e (recreated by every end-to-end run) and one old _sqlx_test_... database. None affect the system.",
   "adapter_versions is not filled yet; there is no minimum interval between manual refreshes; status mappings are managed by command line only.",
-  "The \"job in step with a crashing job\" limitation described in chapter 4.")
+  "The \"job in step with a crashing job\" limitation described in chapter 4.",
+  "The end-to-end test of a courier added by a user waits on the 60-second recheck of waiting requests; it failed once in a full run under load and passed in every run since.",
+  "The automatic update checks contracts and adapters only; a pushed adapter can be deployed while GitHub's AI-service or end-to-end checks fail on it (as in chapter 19).")
 H2("Roadmap")
 T(["Phase", "Deliverable"], [
   ["6 (done)", "Encrypted credential storage and an internal resolve API, the DHL adapter, a scraping adapter against a local demo site, per-provider rate limiting"],

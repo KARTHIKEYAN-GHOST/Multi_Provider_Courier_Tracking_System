@@ -251,8 +251,10 @@ cargo run --quiet -- admin retry-provider --code shreecourier
 
 ## Not done yet
 
-- A real courier has not been built end to end here: the tests play the AI service on the
-  internal API and use a stand-in model for the agent, so no subscription or key was spent.
+- The whole chain has been run live once with Claude, against the demo courier website: a
+  repair and a new adapter, both pushed, pulled and deployed by themselves
+  ([system-test.md](system-test.md)). No real courier website has been built yet (that needs
+  its owner's permission), and the login placeholders were not used live.
 - No web page for adding couriers; it is the API and the command line.
 - A courier added by an organization is visible (by name and code) to every organization;
   its login is not.

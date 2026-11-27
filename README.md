@@ -13,6 +13,7 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/phase-9.md](docs/phase-9.md) — AI repair service: repairs a broken adapter or writes one for a new courier, checks it, and pushes it to GitHub
 - [docs/phase-11.md](docs/phase-11.md) — organizations and the two roles (organization user, admin), testing with data put straight into the database, Claude as the agent's model
 - [docs/phase-12.md](docs/phase-12.md) — couriers added by anyone before they have an adapter; the AI builds the adapter by itself, may log in with the stored login (placeholders), and the new adapter is deployed automatically; per-organization logins
+- [docs/system-test.md](docs/system-test.md) — the whole system tested live with Claude: working adapters, a person answering a code and a CAPTCHA, an adapter repaired and a new one built, pushed, pulled and deployed by themselves
 
 ## Status
 

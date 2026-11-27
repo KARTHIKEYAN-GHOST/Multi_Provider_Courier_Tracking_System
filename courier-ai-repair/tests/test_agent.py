@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 
+from ai_repair import guard
 from ai_repair.agent import Agent, AgentGaveUp, BadAction, Net, Toolbox, parse_action
 from ai_repair.agent.browser import Browser, BrowserUnavailable
 from ai_repair.agent.loop import _shortened
@@ -344,32 +345,54 @@ def agent_settings(settings: Settings, **changes: object) -> Settings:
     return settings.model_copy(update={"ai_repair_agent_browser": False, **changes})
 
 
-REPAIRS_TEST = '''\
-"""Demo-site adapter: a page the agent looked at itself."""
+REPAIRS_HEADER = '''\
+"""Demo-site adapter: tests added by repairs."""
 
 from __future__ import annotations
+'''
 
+#: What the scripted agent adds to the repairs test file. Its own imports go to the top of
+#: the file; the file's earlier tests (an earlier repair's) are kept, as the rules require.
+REPAIRS_IMPORTS = """\
 from pathlib import Path
 
 import pytest
 
 from adapters.demosite.parser import parse_tracking_page
 from courier_adapter_sdk import SchemaDrift
+"""
+REPAIRS_TESTS = """
 
-FIXTURES = Path(__file__).parent / "fixtures" / "demosite"
-PAGE = (FIXTURES / "delivered_page.html").read_text()
+AGENT_FIXTURES = Path(__file__).parent / "fixtures" / "demosite"
 
 
 def test_the_recorded_answer_is_no_tracking_page() -> None:
     with pytest.raises(SchemaDrift):
-        parse_tracking_page((FIXTURES / "RECORDED").read_text())
+        parse_tracking_page((AGENT_FIXTURES / "RECORDED").read_text())
 
 
 def test_the_page_the_agent_saved_reads_as_a_delivered_shipment() -> None:
-    events = parse_tracking_page(PAGE)
+    events = parse_tracking_page((AGENT_FIXTURES / "delivered_page.html").read_text())
     assert len(events) == 5
     assert events[-1].raw_status == "Delivered"
-'''
+"""
+
+
+def repairs_file(existing: str | None) -> str:
+    """The repairs test file with the scripted agent's tests added to what it already holds."""
+    text = existing or REPAIRS_HEADER
+    anchor = "from __future__ import annotations\n"
+    assert anchor in text
+    head, rest = text.split(anchor, 1)
+    return (
+        head
+        + anchor
+        + "\n"
+        + REPAIRS_IMPORTS
+        + rest.rstrip("\n")
+        + "\n"
+        + REPAIRS_TESTS.replace("RECORDED", FIXTURE)
+    )
 
 
 def test_an_agent_looks_at_the_site_with_the_browser_and_tests_against_what_it_saw(
@@ -387,10 +410,15 @@ def test_an_agent_looks_at_the_site_with_the_browser_and_tests_against_what_it_s
     (source / adapter).write_text(code)
     git(source, "commit", "--quiet", "-am", "demo site address of this test")
     git(source, "push", "--quiet", str(remote), "main")
-    newer = code.replace('version: ClassVar[str] = "0.2.0"', 'version: ClassVar[str] = "0.2.1"')
+    # Whatever version the adapter has now (the AI may have raised it), the agent raises it by one.
+    current = guard.adapter_version(code) or ""
+    major, minor, patch = (int(part) for part in current.split("."))
+    bumped = f"{major}.{minor}.{patch + 1}"
+    newer = code.replace(f'version: ClassVar[str] = "{current}"', f'version: ClassVar[str] = "{bumped}"')
     assert newer != code
     repairs = f"{TESTS}/test_demosite_repairs.py"
-    repairs_test = REPAIRS_TEST.replace("RECORDED", FIXTURE)
+    existing = source / repairs
+    repairs_test = repairs_file(existing.read_text() if existing.exists() else None)
 
     model = ScriptedModel(
         [
@@ -402,7 +430,7 @@ def test_an_agent_looks_at_the_site_with_the_browser_and_tests_against_what_it_s
             act("finish", summary="adds a test against a page read from the site"),
         ]
     )
-    task = Task("task-2", "repair", "demosite", "0.2.0", 1, {}, repair_task().samples)
+    task = Task("task-2", "repair", "demosite", current, 1, {}, repair_task().samples)
     used = agent_settings(settings, ai_repair_agent_browser=True)
     done = Repairer(used, model, sandbox).process(task)
 
@@ -418,7 +446,7 @@ def test_an_agent_looks_at_the_site_with_the_browser_and_tests_against_what_it_s
     saved = git(remote, "show", f"main:{fixture}")
     assert "TRACKING0001" in saved
     assert "DEMO-OK-4711" not in saved, "the consignment number never reaches the repository"
-    assert "0.2.1" in git(remote, "show", f"main:{adapter}")
+    assert f'"{bumped}"' in git(remote, "show", f"main:{adapter}")
 
 
 # ----------------------------------------------------------------------------- the courier's login
