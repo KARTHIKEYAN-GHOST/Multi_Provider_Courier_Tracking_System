@@ -227,6 +227,12 @@ services:
     environment:
       AI_REPAIR_ENGINE_URL: http://engine:8081
       ENGINE_REPAIR_TOKEN: ${ENGINE_REPAIR_TOKEN:-}
+      # openrouter (default), claude-code (setup token, laptop) or anthropic (API key, server)
+      AI_REPAIR_MODEL_SUPPLIER: ${AI_REPAIR_MODEL_SUPPLIER:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_REPAIR_CLAUDE_MODEL: ${AI_REPAIR_CLAUDE_MODEL:-}
+      AI_REPAIR_CLAUDE_EFFORT: ${AI_REPAIR_CLAUDE_EFFORT:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
@@ -266,7 +272,7 @@ services:
 
   # --- Indian couriers (docs/indian-couriers.md). Started only on request:
   #       make up-couriers                     all five
-  #       docker compose --profile skyking up  one of them
+  #       docker compose --profile balaji up   one of them
   # A running worker does nothing until the Engine dispatches to it, which it does only once
   # the provider has its credential (API) or its recorded permission (website).
 
@@ -302,22 +308,6 @@ services:
       WORKER_CONCURRENCY: ${SAFEXPRESS_WORKER_CONCURRENCY:-2}
       WORKER_ENGINE_INTERNAL_URL: http://engine:8081
       WORKER_TOKEN: ${SAFEXPRESS_WORKER_TOKEN:-}
-      LOG_FORMAT: json
-    depends_on:
-      engine:
-        condition: service_healthy
-
-  # SkyKing (the data service behind its tracking page). Needs SkyKing's permission.
-  adapter-skyking:
-    profiles: ["couriers", "skyking"]
-    build: *worker-build
-    image: courier-adapter-worker:local
-    command: ["-m", "adapters.skyking"]
-    restart: unless-stopped
-    stop_grace_period: 40s
-    environment:
-      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
-      WORKER_CONCURRENCY: ${SKYKING_WORKER_CONCURRENCY:-2}
       LOG_FORMAT: json
     depends_on:
       engine:

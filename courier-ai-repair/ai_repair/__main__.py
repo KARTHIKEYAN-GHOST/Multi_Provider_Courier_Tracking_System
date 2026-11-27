@@ -12,7 +12,7 @@ import structlog
 
 from .config import Settings
 from .engine import EngineClient, EngineUnavailable
-from .llm import OpenRouterModel
+from .llm import build_model
 from .sandbox import Bubblewrap, SandboxUnavailable, python_roots
 from .service import Repairer, TaskFailed
 
@@ -68,15 +68,7 @@ def main() -> int:
     except SandboxUnavailable as error:
         print(f"refusing to start: {error}. Generated code is never run without a sandbox.", file=sys.stderr)
         return 3
-    model = OpenRouterModel(
-        settings.openrouter_api_key.get_secret_value(),
-        settings.openrouter_model,
-        settings.openrouter_base_url,
-        settings.ai_repair_llm_timeout_s,
-        settings.ai_repair_max_output_tokens,
-        retries=settings.ai_repair_llm_retries,
-        retry_wait_s=settings.ai_repair_llm_retry_wait_s,
-    )
+    model = build_model(settings)
     if settings.ai_repair_agent_browser:
         try:
             from playwright.sync_api import sync_playwright
@@ -100,7 +92,8 @@ def main() -> int:
     once = "--once" in sys.argv[1:]
     log.info(
         "repair_service_started",
-        model=settings.openrouter_model,
+        supplier=settings.ai_repair_model_supplier,
+        model=settings.model_name(),
         dry_run=settings.ai_repair_dry_run,
         branch=settings.ai_repair_push_branch,
     )

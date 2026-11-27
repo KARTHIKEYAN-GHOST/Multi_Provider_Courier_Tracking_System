@@ -12,6 +12,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::db;
+pub use crate::db::api_keys::Role;
 
 const SCHEME: &str = "ctk";
 const PREFIX_HEX_LEN: usize = 12;
@@ -23,6 +24,15 @@ const MAX_ISSUE_ATTEMPTS: u32 = 5;
 pub struct Caller {
     pub user_id: Uuid,
     pub api_key_id: Uuid,
+    pub role: Role,
+    /// `None` for an admin.
+    pub organization_id: Option<Uuid>,
+}
+
+impl Caller {
+    pub fn is_admin(&self) -> bool {
+        self.role == Role::Admin
+    }
 }
 
 #[derive(Clone)]
@@ -139,6 +149,8 @@ pub async fn authenticate(pool: &PgPool, presented: &str) -> Result<Option<Calle
     Ok(Some(Caller {
         user_id: record.user_id,
         api_key_id: record.id,
+        role: record.role,
+        organization_id: record.organization_id,
     }))
 }
 

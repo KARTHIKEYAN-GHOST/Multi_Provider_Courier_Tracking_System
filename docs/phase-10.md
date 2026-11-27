@@ -110,6 +110,10 @@ sudo uv run playwright install-deps chromium           # system libraries (needs
 
 ## Staff answer the challenges
 
+> **Changed in Phase 11.** There are now organizations and two roles. Only **admins** see
+> and answer challenges, every organization's in one queue; organization users get 403.
+> `admin set-staff` is gone; use `admin set-role` ([phase-11.md](phase-11.md)).
+
 The people who use this system are the company's own staff, not outside customers. So
 **every user is a staff member**: they see every open one-time code and CAPTCHA, oldest
 first, in the human interface (<http://localhost:8088>) and through `GET /v1/interventions`,

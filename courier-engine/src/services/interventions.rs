@@ -1,9 +1,9 @@
 //! Human interventions: a lookup that stops for a one-time code or a CAPTCHA answer.
 //!
 //! 1. The worker reports `job.intervention_required`. The job leaves PROCESSING for
-//!    WAITING_FOR_OTP / WAITING_FOR_CAPTCHA and a challenge row is created for one user.
+//!    WAITING_FOR_OTP / WAITING_FOR_CAPTCHA and a challenge row is created.
 //!    Nothing is held open while waiting: the worker has saved its session and moved on.
-//! 2. The user answers through the public API. The answer is stored encrypted, the job goes
+//! 2. An admin answers through the public API (organization users do not see challenges). The answer is stored encrypted, the job goes
 //!    back to QUEUED (same attempt) and `job.resume` is sent. The answer is not in the message.
 //! 3. The worker fetches the answer over the internal API — allowed only for that job and
 //!    attempt while it is in flight — and continues. A result closes the attempt as usual;
@@ -63,11 +63,9 @@ pub(crate) async fn close_open(
 
 #[derive(sqlx::FromRow)]
 struct OpenJob {
-    shipment_id: Uuid,
     challenge_count: i32,
     max_challenges: i32,
     intervention_ttl_s: i32,
-    initiated_by: Option<Uuid>,
 }
 
 /// Handles `job.intervention_required`. Idempotent and order-independent like the other
@@ -123,7 +121,7 @@ pub(crate) async fn on_intervention_required(
     }
 
     let job = sqlx::query_as::<_, OpenJob>(
-        "SELECT j.shipment_id, j.challenge_count, p.max_challenges, p.intervention_ttl_s, j.initiated_by
+        "SELECT j.challenge_count, p.max_challenges, p.intervention_ttl_s
          FROM tracking_jobs j
          JOIN shipments s ON s.id = j.shipment_id
          JOIN providers p ON p.id = s.provider_id
@@ -180,25 +178,11 @@ pub(crate) async fn on_intervention_required(
     .fetch_one(&mut *conn)
     .await?;
 
-    // The challenge goes to the user who asked for the lookup, if they are still subscribed;
-    // otherwise (an automatic poll) to the shipment's longest-standing subscriber.
-    let assigned: Option<Uuid> = sqlx::query_scalar(
-        "SELECT COALESCE(
-             (SELECT r.user_id FROM tracking_requests r
-              WHERE r.shipment_id = $1 AND r.status = 'active' AND r.user_id = $2),
-             (SELECT r.user_id FROM tracking_requests r
-              WHERE r.shipment_id = $1 AND r.status = 'active' ORDER BY r.created_at, r.id LIMIT 1))",
-    )
-    .bind(job.shipment_id)
-    .bind(job.initiated_by)
-    .fetch_one(&mut *conn)
-    .await?;
-
     sqlx::query(
         "INSERT INTO human_interventions
              (id, job_id, attempt, sequence, kind, prompt, image_content_type, image, response_format,
-              session_ref, execution_id, assigned_user_id, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+              session_ref, execution_id, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(Uuid::now_v7())
     .bind(p.job_id)
@@ -211,7 +195,6 @@ pub(crate) async fn on_intervention_required(
     .bind(p.response_format.as_ref().map(|f| json!(f)))
     .bind(p.session_ref)
     .bind(p.execution_id)
-    .bind(assigned)
     .bind(expires_at)
     .execute(&mut *conn)
     .await?;
@@ -237,7 +220,7 @@ async fn set_disposition(
 
 // ----------------------------------------------------------------------------- the user answers
 
-/// A challenge as its assigned user, or a staff member, sees it. No job, shipment or session identifiers.
+/// A challenge as an admin sees it. No job, shipment or session identifiers.
 #[derive(Debug, sqlx::FromRow)]
 pub struct InterventionRow {
     pub id: Uuid,
@@ -248,7 +231,6 @@ pub struct InterventionRow {
     pub has_image: bool,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
-    pub tracking_request_id: Option<Uuid>,
     pub provider_code: String,
     pub tracking_number: String,
 }
@@ -259,20 +241,16 @@ macro_rules! intervention_select {
                 CASE WHEN i.status = 'pending' AND i.expires_at <= clock_timestamp()
                      THEN 'expired' ELSE i.status END AS status,
                 i.response_format, i.image IS NOT NULL AS has_image, i.expires_at, i.created_at,
-                (SELECT r.id FROM tracking_requests r
-                 WHERE r.shipment_id = s.id AND r.user_id = $1 AND r.status = 'active'
-                ) AS tracking_request_id,
                 p.code AS provider_code, s.tracking_number
          FROM human_interventions i
          JOIN tracking_jobs j ON j.id = i.job_id
          JOIN shipments s ON s.id = j.shipment_id
          JOIN providers p ON p.id = s.provider_id
-         WHERE (i.assigned_user_id = $1
-                OR EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.is_staff AND u.status = 'active'))"
+         WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.role = 'admin' AND u.status = 'active')"
     };
 }
 
-/// The caller's challenges that still wait for an answer, oldest first.
+/// Every challenge that still waits for an answer, oldest first. Empty unless the caller is an admin.
 pub async fn list_pending(
     pool: &PgPool,
     user_id: Uuid,
@@ -392,12 +370,11 @@ pub async fn submit(
     response: &str,
 ) -> Result<(), SubmitError> {
     let mut tx = pool.begin().await?;
-    // Not the caller's challenge and no such challenge look the same.
+    // A caller who is not an admin and a challenge that does not exist look the same.
     let job_id: Uuid = sqlx::query_scalar(
         "SELECT job_id FROM human_interventions
          WHERE id = $1
-           AND (assigned_user_id = $2
-                OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.is_staff AND u.status = 'active'))",
+           AND EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin' AND u.status = 'active')",
     )
     .bind(intervention_id)
     .bind(user_id)

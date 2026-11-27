@@ -210,9 +210,10 @@ async fn a_prefix_collision_is_retried_with_a_new_key(pool: PgPool) {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    let user_id = db::api_keys::create_user(&pool, "a@example.com")
-        .await
-        .unwrap();
+    let user_id =
+        db::api_keys::create_user(&pool, "a@example.com", db::api_keys::Membership::Admin)
+            .await
+            .unwrap();
     let existing = api_keys::generate();
     let existing_key = api_keys::issue_with(&pool, user_id, None, {
         let k = existing.clone();
@@ -263,9 +264,10 @@ async fn key_issue_gives_up_after_a_bounded_number_of_collisions(pool: PgPool) {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    let user_id = db::api_keys::create_user(&pool, "a@example.com")
-        .await
-        .unwrap();
+    let user_id =
+        db::api_keys::create_user(&pool, "a@example.com", db::api_keys::Membership::Admin)
+            .await
+            .unwrap();
     let existing = api_keys::generate();
     api_keys::issue_with(&pool, user_id, None, {
         let k = existing.clone();
@@ -304,5 +306,71 @@ fn generated_keys_are_distinct_and_well_formed() {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
         assert_ne!(parts[2], "0".repeat(64));
+    }
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_disabled_organizations_users_are_rejected_and_other_organizations_keep_working(
+    pool: PgPool,
+) {
+    let (_, ours) = common::user_of(&pool, "a@example.com", "Acme").await;
+    let (_, theirs) = common::user_of(&pool, "b@example.com", "Globex").await;
+    let (_, admin) = common::admin(&pool, "ops@example.com").await;
+    for key in [&ours, &theirs, &admin] {
+        assert_eq!(
+            get(&app(&pool), "/v1/tracking-requests", key).await.status,
+            200
+        );
+    }
+
+    sqlx::query("UPDATE organizations SET status = 'disabled' WHERE name = 'Acme'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        get(&app(&pool), "/v1/tracking-requests", &ours)
+            .await
+            .status,
+        401
+    );
+    assert_eq!(
+        get(&app(&pool), "/v1/tracking-requests", &theirs)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        get(&app(&pool), "/v1/tracking-requests", &admin)
+            .await
+            .status,
+        200
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn an_admin_has_no_organization_and_an_organization_user_always_has_one(pool: PgPool) {
+    let org = common::organization(&pool, "Acme").await;
+    let (admin_id, _) = common::admin(&pool, "ops@example.com").await;
+    let caller_role: String = sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1")
+        .bind(admin_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(caller_role, "admin");
+    // The database refuses an admin with an organization and a user without one.
+    for (role, organization) in [("admin", Some(org)), ("org_user", None)] {
+        let refused = sqlx::query(
+            "INSERT INTO users (id, email, role, organization_id) VALUES ($1, $2, $3::user_role, $4)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(format!("{role}@example.com"))
+        .bind(role)
+        .bind(organization)
+        .execute(&pool)
+        .await;
+        assert!(
+            refused.is_err(),
+            "{role} with {organization:?} was accepted"
+        );
     }
 }

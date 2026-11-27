@@ -98,21 +98,6 @@ queues:
       - exchange: courier.jobs
         routing_key: job.resume.v1.safexpress
 
-  - name: adapter.skyking.jobs
-    durable: true
-    consumer: adapter-worker
-    arguments:
-      x-queue-type: quorum
-      x-delivery-limit: 3
-      x-dead-letter-exchange: courier.dlx
-      x-dead-letter-routing-key: adapter.skyking.jobs
-    bindings:
-      - exchange: courier.jobs
-        routing_key: job.track.v1.skyking
-      # A lookup continued after a human answer; same queue, same delivery limit.
-      - exchange: courier.jobs
-        routing_key: job.resume.v1.skyking
-
   - name: adapter.abt.jobs
     durable: true
     consumer: adapter-worker
@@ -220,15 +205,6 @@ queues:
     bindings:
       - exchange: courier.dlx
         routing_key: adapter.safexpress.jobs
-
-  - name: adapter.skyking.jobs.dlq
-    durable: true
-    consumer: engine-dead-letter-consumer
-    arguments:
-      x-queue-type: quorum
-    bindings:
-      - exchange: courier.dlx
-        routing_key: adapter.skyking.jobs
 
   - name: adapter.abt.jobs.dlq
     durable: true

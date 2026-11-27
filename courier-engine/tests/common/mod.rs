@@ -21,11 +21,45 @@ pub fn app(pool: &PgPool) -> Router {
     api::router(AppState::new(pool.clone(), Config::for_tests()))
 }
 
+/// The organization test users belong to, created on first use.
+pub async fn organization(pool: &PgPool, name: &str) -> Uuid {
+    match db::api_keys::find_organization_id(pool, name)
+        .await
+        .unwrap()
+    {
+        Some(id) => id,
+        None => db::api_keys::create_organization(pool, name).await.unwrap(),
+    }
+}
+
 /// Creates a user with one API key. Returns (user id, full key).
-pub async fn user(pool: &PgPool, email: &str) -> (Uuid, String) {
-    let user_id = db::api_keys::create_user(pool, email).await.unwrap();
+async fn member(
+    pool: &PgPool,
+    email: &str,
+    membership: db::api_keys::Membership,
+) -> (Uuid, String) {
+    let user_id = db::api_keys::create_user(pool, email, membership)
+        .await
+        .unwrap();
     let key = api_keys::issue(pool, user_id, Some("test")).await.unwrap();
     (user_id, key)
+}
+
+/// An organization user (of "Test organization") with one API key: (user id, full key).
+pub async fn user(pool: &PgPool, email: &str) -> (Uuid, String) {
+    let org = organization(pool, "Test organization").await;
+    member(pool, email, db::api_keys::Membership::Organization(org)).await
+}
+
+/// A user of the named organization.
+pub async fn user_of(pool: &PgPool, email: &str, organization_name: &str) -> (Uuid, String) {
+    let org = organization(pool, organization_name).await;
+    member(pool, email, db::api_keys::Membership::Organization(org)).await
+}
+
+/// An admin of the platform with one API key.
+pub async fn admin(pool: &PgPool, email: &str) -> (Uuid, String) {
+    member(pool, email, db::api_keys::Membership::Admin).await
 }
 
 pub struct Reply {

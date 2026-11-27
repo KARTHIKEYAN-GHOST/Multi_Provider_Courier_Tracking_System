@@ -442,4 +442,4 @@ def test_a_new_provider_gets_its_adapter_and_everything_around_it_in_one_commit(
     )
     asked = model.asked[0][0]["content"]
     assert "Approved hosts (the only ones the adapter may contact): api.fastship.example" in asked
-    assert "adapters/skyking/adapter.py" in asked, "an existing adapter is shown as the pattern to follow"
+    assert "adapters/delhivery/adapter.py" in asked, "an existing adapter is shown as the pattern to follow"

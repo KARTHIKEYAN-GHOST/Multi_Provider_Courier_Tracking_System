@@ -1,5 +1,5 @@
-//! The five Indian couriers of migration 0013: seeded, mapped, and unusable until an
-//! operator has supplied what each needs.
+//! The Indian couriers of migration 0013 (SkyKing removed again by 0019): seeded, mapped,
+//! and unusable until an operator has supplied what each needs.
 
 mod common;
 
@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use courier_engine::db::MIGRATOR;
 
 const API: [&str; 2] = ["delhivery", "safexpress"];
-const WEBSITES: [&str; 3] = ["abt", "balaji", "skyking"];
+const WEBSITES: [&str; 2] = ["abt", "balaji"];
 
 /// code, method, adapter key, queue, requires_credential, scraping_authorized, is_test, poll interval
 type Seeded = (String, String, String, String, bool, bool, bool, i32);
@@ -43,7 +43,7 @@ async fn each_courier_has_one_adapter_its_own_queue_and_no_polling(pool: PgPool)
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), API.len() + WEBSITES.len());
     for (code, method, key, queue, needs_credential, authorized, is_test, poll) in rows {
         assert_eq!(key, code);
         assert_eq!(queue, format!("adapter.{code}.jobs"));
@@ -86,11 +86,11 @@ async fn a_website_courier_is_refused_until_its_owners_permission_is_recorded(po
         let refused = request(&pool, &key, provider, "LR12345").await;
         assert_eq!(refused.status, 409, "{provider}: {:?}", refused.body);
     }
-    sqlx::query("UPDATE providers SET scraping_authorized = true WHERE code = 'skyking'")
+    sqlx::query("UPDATE providers SET scraping_authorized = true WHERE code = 'balaji'")
         .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(request(&pool, &key, "skyking", "LR12345").await.status, 201);
+    assert_eq!(request(&pool, &key, "balaji", "LR12345").await.status, 201);
     assert_eq!(request(&pool, &key, "abt", "LR12345").await.status, 409);
 }
 
@@ -120,7 +120,7 @@ async fn every_status_code_the_adapters_produce_has_a_mapping(pool: PgPool) {
         ("undelivered", "EXCEPTION"),
     ]
     .map(|(raw, normalized)| (raw.to_string(), normalized.to_string()));
-    for provider in ["abt", "balaji", "safexpress", "skyking"] {
+    for provider in ["abt", "balaji", "safexpress"] {
         assert_eq!(mapped(provider).await, codes, "{provider}");
     }
     let delhivery = mapped("delhivery").await;
@@ -136,4 +136,19 @@ async fn every_status_code_the_adapters_produce_has_a_mapping(pool: PgPool) {
             "{raw}"
         );
     }
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn skyking_is_gone(pool: PgPool) {
+    let (_, key) = common::user(&pool, "web@example.com").await;
+    let left: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM providers WHERE code = 'skyking')
+              + (SELECT count(*) FROM adapters WHERE key = 'skyking')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0);
+    let refused = request(&pool, &key, "skyking", "LR12345").await;
+    assert!(refused.status.is_client_error(), "{:?}", refused.body);
 }

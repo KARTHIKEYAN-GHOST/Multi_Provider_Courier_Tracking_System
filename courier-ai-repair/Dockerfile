@@ -1,9 +1,11 @@
 # AI repair service with its agent. Build from the repository root:
 #   docker build -f courier-ai-repair/Dockerfile .
 #
-# The image holds three things: the service, a headless browser for the agent, and a Python
+# The image holds four things: the service, a headless browser for the agent, a Python
 # environment of courier-adapters with the linter, the type checker and pytest, in which
-# generated code is checked inside a bubblewrap sandbox. It holds no source of the
+# generated code is checked inside a bubblewrap sandbox, and the Claude Code program (used
+# only as the model when AI_REPAIR_MODEL_SUPPLIER=claude-code; leave it out with
+# --build-arg CLAUDE_CODE=false). It holds no source of the
 # adapters: every task works on a fresh clone from GitHub.
 
 FROM python:3.13-slim
@@ -12,7 +14,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never PYTHONUNBU
     PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git bubblewrap ca-certificates libatomic1 \
+    && apt-get install -y --no-install-recommends git bubblewrap ca-certificates curl libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # (libatomic1: Playwright's driver needs it and the slim image lacks it.)
@@ -31,7 +33,12 @@ COPY courier-ai-repair/ai_repair ai_repair
 
 RUN useradd --system --uid 10003 --create-home agent
 USER agent
-# No secret is baked in: the three tokens come from the environment.
+# Claude Code's own installer, into /home/agent/.local/bin. It never updates itself here.
+ARG CLAUDE_CODE=true
+RUN if [ "$CLAUDE_CODE" = "true" ]; then curl -fsSL https://claude.ai/install.sh | bash; fi
+# No secret is baked in: the tokens come from the environment.
 ENV AI_REPAIR_ADAPTERS_VENV=/app/courier-adapters/.venv \
-    AI_REPAIR_WORK_DIR=/tmp/courier-ai-repair
+    AI_REPAIR_WORK_DIR=/tmp/courier-ai-repair \
+    PATH=/home/agent/.local/bin:$PATH \
+    DISABLE_AUTOUPDATER=1
 ENTRYPOINT ["/app/courier-ai-repair/.venv/bin/python", "-m", "ai_repair"]

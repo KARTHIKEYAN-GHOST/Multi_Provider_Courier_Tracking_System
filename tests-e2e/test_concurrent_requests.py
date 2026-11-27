@@ -51,7 +51,8 @@ def test_twenty_identical_requests_from_one_user(stack: Stack, user: User) -> No
 
 
 def test_ten_users_requesting_the_same_shipment_twice_each(stack: Stack) -> None:
-    users = [stack.new_user() for _ in range(10)]
+    # Users of three organizations: they share one lookup, each sees only their own request.
+    users = [stack.new_user(organization=f"E2E shared organization {n % 3}") for n in range(10)]
     tracking_number = number("DELAY-1500")
     responses = together([(lambda u=u: u.track(tracking_number)) for u in users for _ in range(2)])
     assert all(r.status_code in (200, 201) for r in responses)

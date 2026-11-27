@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: check-ai check-ai-push help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai
+.PHONY: check-ai check-ai-push help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai seed-test-data
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -49,7 +49,7 @@ check-ai: ## Check the running AI repair container without any model: sandbox an
 check-ai-push: ## Like check-ai, and also PUSHES one small test file to GitHub the way a finished repair does
 	$(MAKE) check-ai SELFCHECK_FLAGS=--push
 
-up-couriers: env ## Additionally start the workers for Delhivery, Safexpress, SkyKing, ABT and Balaji (see docs/indian-couriers.md)
+up-couriers: env ## Additionally start the workers for Delhivery, Safexpress, ABT, Balaji and The Professional Couriers (see docs/indian-couriers.md)
 	$(COMPOSE) --profile couriers up -d --build --wait
 
 master-key: ## Print a new random master key for CREDENTIAL_MASTER_KEY (shown once; nothing is stored)
@@ -81,6 +81,13 @@ test-ai-repair: ## AI repair service: ruff, mypy, pytest (the sandbox tests need
 	cd courier-ai-repair && uv run ruff check .
 	cd courier-ai-repair && uv run mypy
 	cd courier-ai-repair && uv run pytest
+
+seed-test-data: env ## Put the test organizations, users and shipments of infrastructure/test-data.sql into the database and print their API keys
+	set -a; . ./.env; set +a; \
+	$(COMPOSE) exec -T postgres psql -q -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" < infrastructure/test-data.sql
+	@cd courier-engine && for email in asha@acme.example.com ravi@acme.example.com meena@globex.example.com arun@globex.example.com ops@platform.example.com; do \
+	    printf '%-28s ' "$$email"; cargo run --quiet -- admin create-api-key --email "$$email" --name test-data | sed -n 's/^api_key: //p'; \
+	done
 
 maintenance: env ## Run archiving and retention once, now (the Engine also does this periodically)
 	cd courier-engine && cargo run --quiet -- admin run-maintenance

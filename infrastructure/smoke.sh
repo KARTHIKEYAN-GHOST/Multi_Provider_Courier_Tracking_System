@@ -14,9 +14,10 @@ BASE="http://127.0.0.1:${ENGINE_HOST_PORT:-8080}"
 echo "1. Engine is ready (database and RabbitMQ reachable)"
 curl -fsS "$BASE/readyz" >/dev/null
 
-echo "2. Create a user"
+echo "2. Create a user of the smoke-test organization"
 EMAIL="smoke-$(date +%s)@example.com"
-KEY=$($COMPOSE exec -T --interactive=false engine courier-engine admin create-user --email "$EMAIL" | sed -n 's/^api_key: //p')
+$COMPOSE exec -T --interactive=false engine courier-engine admin create-organization --name "Smoke test" >/dev/null
+KEY=$($COMPOSE exec -T --interactive=false engine courier-engine admin create-user --email "$EMAIL" --organization "Smoke test" | sed -n 's/^api_key: //p')
 test -n "$KEY"
 
 echo "3. Track a dummy shipment"

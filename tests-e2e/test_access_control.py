@@ -17,13 +17,15 @@ def test_requests_without_a_valid_key_are_refused(stack: Stack, user: User) -> N
 
 
 def test_a_user_cannot_see_or_touch_another_users_request(stack: Stack, user: User) -> None:
-    other = stack.new_user()
+    # Another organization's user, a colleague in the same organization, and an admin.
+    others = [stack.new_user(organization="E2E other organization"), stack.new_user(), stack.answerer()]
     request_id = user.submit(number("OK"))
-    for path in ("", "/events", "/jobs"):
-        assert other.http.get(f"/tracking-requests/{request_id}{path}").status_code == 404
-    assert other.http.post(f"/tracking-requests/{request_id}/refresh").status_code == 404
-    assert other.http.delete(f"/tracking-requests/{request_id}").status_code == 404
-    assert request_id not in [r["id"] for r in other.http.get("/tracking-requests").json()["items"]]
+    for other in others:
+        for path in ("", "/events", "/jobs"):
+            assert other.http.get(f"/tracking-requests/{request_id}{path}").status_code == 404
+        assert other.http.post(f"/tracking-requests/{request_id}/refresh").status_code == 404
+        assert other.http.delete(f"/tracking-requests/{request_id}").status_code == 404
+        assert request_id not in [r["id"] for r in other.http.get("/tracking-requests").json()["items"]]
     assert user.request(request_id)["id"] == request_id
 
 

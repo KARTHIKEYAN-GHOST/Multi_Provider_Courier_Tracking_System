@@ -8,9 +8,10 @@ A multi-provider courier tracking system: a Rust Engine that owns the database a
 - [docs/phase-6.md](docs/phase-6.md) — credentials, the DHL and demo-site adapters, rate limiting
 - [docs/phase-7.md](docs/phase-7.md) — automatic re-polling, status-mapping management, archiving and retention
 - [docs/phase-8.md](docs/phase-8.md) — one-time codes and CAPTCHAs: sessions in Redis, the intervention workflow, the human interface
-- [docs/indian-couriers.md](docs/indian-couriers.md) — Delhivery, Safexpress, SkyKing, ABT and Balaji Roadlines: how each is tracked, what each needs before use
+- [docs/indian-couriers.md](docs/indian-couriers.md) — Delhivery, Safexpress, ABT and Balaji Roadlines: how each is tracked, what each needs before use
 - [docs/phase-10.md](docs/phase-10.md) — The agent: the AI works in steps with a browser, an HTTP client and the adapter's files, with any chat model
 - [docs/phase-9.md](docs/phase-9.md) — AI repair service: repairs a broken adapter or writes one for a new courier, checks it, and pushes it to GitHub
+- [docs/phase-11.md](docs/phase-11.md) — organizations and the two roles (organization user, admin), testing with data put straight into the database, Claude as the agent's model
 
 ## Status
 
@@ -67,7 +68,8 @@ make down             # stop (data kept); make destroy also deletes the volumes
 
 ```
 cd courier-engine
-cargo run -- admin create-user --email you@example.com    # prints an API key once
+cargo run -- admin create-organization --name "Acme Traders"
+cargo run -- admin create-user --email you@example.com --organization "Acme Traders"   # prints an API key once
 cargo run -- serve                                         # http://127.0.0.1:8080
 
 curl -H "Authorization: Bearer <key>" -H 'content-type: application/json' \

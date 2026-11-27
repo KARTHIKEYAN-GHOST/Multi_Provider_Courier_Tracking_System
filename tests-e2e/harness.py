@@ -287,6 +287,7 @@ class Stack:
         )
         self._vhost = quote(self.settings["RABBITMQ_VHOST"], safe="")
         self._users = 0
+        self._answerer: User | None = None
 
     # ------------------------------------------------------------------ database
 
@@ -481,12 +482,20 @@ class Stack:
 
     # ------------------------------------------------------------------ API
 
-    def new_user(self) -> User:
-        """Creates a user with the Engine's admin command and returns an API client for them."""
+    def new_user(self, organization: str | None = "E2E organization") -> User:
+        """Creates a user with the Engine's admin command and returns an API client for them.
+
+        The user belongs to ``organization`` (created when needed); ``None`` makes an admin.
+        """
         self._users += 1
         email = f"user{self._users}-{secrets.token_hex(3)}@e2e.example"
+        if organization is None:
+            membership = ["--admin"]
+        else:
+            self.admin("create-organization", "--name", organization)
+            membership = ["--organization", organization]
         output = subprocess.run(
-            [self.engine_binary, "admin", "create-user", "--email", email],
+            [self.engine_binary, "admin", "create-user", "--email", email, *membership],
             cwd=ENGINE_DIR,
             env=self._engine_env,
             check=True,
@@ -495,6 +504,12 @@ class Stack:
         ).stdout
         key = next(line.split(": ", 1)[1] for line in output.splitlines() if line.startswith("api_key: "))
         return User(self, email, key)
+
+    def answerer(self) -> User:
+        """The admin who answers one-time codes and CAPTCHAs (only admins see them)."""
+        if self._answerer is None:
+            self._answerer = self.new_user(organization=None)
+        return self._answerer
 
     def shutdown(self) -> None:
         for worker in self.workers.values():

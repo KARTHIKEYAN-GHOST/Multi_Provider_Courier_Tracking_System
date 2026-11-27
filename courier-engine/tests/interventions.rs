@@ -6,7 +6,7 @@
 mod common;
 
 use axum::{Router, http::Method};
-use common::{call, get, track, user};
+use common::{admin, call, get, track, user, user_of};
 use courier_engine::{
     api,
     config::Config,
@@ -112,26 +112,22 @@ async fn exec(pool: &PgPool, sql: &'static str) {
     sqlx::query(sql).execute(pool).await.unwrap();
 }
 
-/// A user who is not a staff member (for example a program's account): it sees only the
-/// challenges of its own lookups.
-async fn restricted_user(pool: &PgPool, email: &str) -> (Uuid, String) {
-    let (id, key) = user(pool, email).await;
-    sqlx::query("UPDATE users SET is_staff = false WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await
-        .unwrap();
-    (id, key)
-}
-
 async fn job_status(pool: &PgPool) -> String {
     text(pool, "SELECT status::text FROM tracking_jobs").await
 }
 
-/// A user, a tracking request, and its job stopped at a challenge.
-/// Returns (user key, job id, intervention id).
+/// An organization user's tracking request whose job stopped at a challenge, and an admin.
+/// Returns (admin key, job id, intervention id).
 async fn waiting_job(pool: &PgPool, extra: Value) -> (String, Uuid, String) {
+    let (_, admin_key, job_id, id) = waiting_job_with_owner(pool, extra).await;
+    (admin_key, job_id, id)
+}
+
+/// Like [`waiting_job`], and also the key of the organization user who asked for the lookup:
+/// (owner key, admin key, job id, intervention id).
+async fn waiting_job_with_owner(pool: &PgPool, extra: Value) -> (String, String, Uuid, String) {
     let (_, key) = user(pool, "owner@example.com").await;
+    let (_, admin_key) = admin(pool, "admin@example.com").await;
     let reply = track(&app(pool), &key, "DUMMY-OK-1").await;
     let job_id = Uuid::parse_str(reply.body["latest_job"]["id"].as_str().unwrap()).unwrap();
     let execution = Uuid::now_v7();
@@ -143,12 +139,12 @@ async fn waiting_job(pool: &PgPool, extra: Value) -> (String, Uuid, String) {
         handle(pool, &challenge(job_id, execution, extra)).await,
         Handled::Processed
     );
-    let list = get(&app(pool), "/v1/interventions", &key).await;
+    let list = get(&app(pool), "/v1/interventions", &admin_key).await;
     let id = list.body["items"][0]["id"]
         .as_str()
         .expect("one open challenge")
         .to_string();
-    (key, job_id, id)
+    (key, admin_key, job_id, id)
 }
 
 async fn answer(pool: &PgPool, key: &str, id: &str, response: &str) -> common::Reply {
@@ -216,8 +212,8 @@ async fn fetch_answer(pool: &PgPool, adapter: &str, job_id: Uuid, id: &str) -> O
 // ----------------------------------------------------------------------------- waiting
 
 #[sqlx::test(migrator = "MIGRATOR")]
-async fn a_challenge_parks_the_job_and_a_restricted_user_sees_only_their_own(pool: PgPool) {
-    let (key, _, id) = waiting_job(&pool, json!({})).await;
+async fn a_challenge_parks_the_job_and_only_admins_see_it(pool: PgPool) {
+    let (owner, key, _, id) = waiting_job_with_owner(&pool, json!({})).await;
 
     assert_eq!(job_status(&pool).await, "WAITING_FOR_OTP");
     assert_eq!(
@@ -250,16 +246,19 @@ async fn a_challenge_parks_the_job_and_a_restricted_user_sees_only_their_own(poo
         assert!(one.body.get(hidden).is_none(), "{hidden} is exposed");
     }
 
-    let (_, stranger) = restricted_user(&pool, "stranger@example.com").await;
-    assert_eq!(
-        get(&app(&pool), &format!("/v1/interventions/{id}"), &stranger)
-            .await
-            .status,
-        404
-    );
-    assert_eq!(answer(&pool, &stranger, &id, ANSWER).await.status, 404);
-    let theirs = get(&app(&pool), "/v1/interventions", &stranger).await;
-    assert_eq!(theirs.body["items"], json!([]));
+    // Organization users, the one who asked included, do not see challenges at all.
+    let (_, stranger) = user_of(&pool, "stranger@example.com", "Other organization").await;
+    for org_user in [&owner, &stranger] {
+        for path in [
+            "/v1/interventions".to_string(),
+            format!("/v1/interventions/{id}"),
+        ] {
+            let reply = get(&app(&pool), &path, org_user).await;
+            assert_eq!(reply.status, 403, "{path}");
+            assert_eq!(reply.body["error"]["code"], "admins_only");
+        }
+        assert_eq!(answer(&pool, org_user, &id, ANSWER).await.status, 403);
+    }
     assert_eq!(job_status(&pool).await, "WAITING_FOR_OTP");
     assert_eq!(
         get(&app(&pool), "/v1/interventions", "no-key").await.status,
@@ -330,33 +329,6 @@ async fn a_repeated_or_late_challenge_changes_nothing(pool: PgPool) {
         handle(&pool, unknown.to_string().as_bytes()).await,
         Handled::Rejected(_)
     ));
-}
-
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_challenge_of_an_automatic_poll_goes_to_the_first_subscriber(pool: PgPool) {
-    let (first, first_key) = user(&pool, "first@example.com").await;
-    let reply = track(&app(&pool), &first_key, "DUMMY-OK-1").await;
-    let job_id = Uuid::parse_str(reply.body["latest_job"]["id"].as_str().unwrap()).unwrap();
-    let (_, second_key) = restricted_user(&pool, "second@example.com").await;
-    track(&app(&pool), &second_key, "DUMMY-OK-1").await;
-    exec(
-        &pool,
-        "UPDATE tracking_jobs SET initiated_by = NULL, trigger = 'poll'",
-    )
-    .await;
-
-    handle(&pool, &challenge(job_id, Uuid::now_v7(), json!({}))).await;
-    let assigned: Uuid = sqlx::query_scalar("SELECT assigned_user_id FROM human_interventions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(assigned, first);
-    assert_eq!(
-        get(&app(&pool), "/v1/interventions", &second_key)
-            .await
-            .body["items"],
-        json!([])
-    );
 }
 
 // ----------------------------------------------------------------------------- answering
@@ -706,7 +678,7 @@ async fn a_refused_answer_leads_to_a_new_challenge_until_the_limit(pool: PgPool)
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn an_unanswered_challenge_expires_the_job(pool: PgPool) {
-    let (key, _, id) = waiting_job(&pool, json!({})).await;
+    let (owner, key, _, id) = waiting_job_with_owner(&pool, json!({})).await;
     // Not yet due: the reaper leaves it alone.
     assert_eq!(reap_expired(&pool, 100, POLICY).await.unwrap(), 0);
     assert_eq!(job_status(&pool).await, "WAITING_FOR_OTP");
@@ -757,7 +729,7 @@ async fn an_unanswered_challenge_expires_the_job(pool: PgPool) {
         &app(&pool),
         Method::POST,
         &format!("/v1/tracking-requests/{request}/refresh"),
-        Some(&key),
+        Some(&owner),
         None,
     )
     .await;
@@ -786,48 +758,69 @@ async fn a_resume_nobody_picks_up_is_closed_by_the_queue_deadline_and_its_answer
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]
-async fn a_staff_member_sees_and_answers_every_open_challenge(pool: PgPool) {
-    let (owner, _, id) = waiting_job(&pool, json!({})).await;
-    // Every user is a staff member unless that is taken away.
-    let (staff_id, staff) = user(&pool, "staff@example.com").await;
-    let one = format!("/v1/interventions/{id}");
-    let list = get(&app(&pool), "/v1/interventions", &staff).await;
-    assert_eq!(list.body["items"][0]["id"], id.as_str());
-    assert_eq!(list.body["items"][0]["tracking_number"], "DUMMY-OK-1");
-    assert_eq!(
-        list.body["items"][0]["tracking_request_id"],
-        Value::Null,
-        "the owner's request is not the staff member's"
-    );
-    assert_eq!(get(&app(&pool), &one, &staff).await.status, 200);
-    // The owner still sees it too.
-    assert_eq!(get(&app(&pool), &one, &owner).await.status, 200);
+async fn an_admin_sees_and_answers_every_organizations_challenges(pool: PgPool) {
+    let (_, admin_key, _, first) = waiting_job_with_owner(&pool, json!({})).await;
+    // A second organization's lookup stops at a challenge too.
+    let (_, other) = user_of(&pool, "buyer@example.com", "Second organization").await;
+    let reply = track(&app(&pool), &other, "DUMMY-OK-2").await;
+    let job = Uuid::parse_str(reply.body["latest_job"]["id"].as_str().unwrap()).unwrap();
+    let execution = Uuid::now_v7();
+    handle(&pool, &started(job, execution)).await;
+    handle(&pool, &challenge(job, execution, json!({}))).await;
 
-    // Taking the role away closes the view again.
-    sqlx::query("UPDATE users SET is_staff = false WHERE id = $1")
-        .bind(staff_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert_eq!(get(&app(&pool), &one, &staff).await.status, 404);
-    assert_eq!(answer(&pool, &staff, &id, ANSWER).await.status, 404);
-    sqlx::query("UPDATE users SET is_staff = true WHERE id = $1")
-        .bind(staff_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // One queue for the admin, oldest first, both organizations in it.
+    let list = get(&app(&pool), "/v1/interventions", &admin_key).await;
+    let numbers: Vec<&str> = list.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["tracking_number"].as_str().unwrap())
+        .collect();
+    assert_eq!(numbers, ["DUMMY-OK-1", "DUMMY-OK-2"]);
+    assert_eq!(list.body["items"][0]["id"], first.as_str());
 
-    // The staff member answers; it is recorded who did, and one answer is all a challenge takes.
-    assert_eq!(answer(&pool, &staff, &id, ANSWER).await.status, 202);
-    let by: Uuid = sqlx::query_scalar("SELECT answered_by FROM human_interventions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(by, staff_id);
-    assert_ne!(job_status(&pool).await, "WAITING_FOR_OTP");
-    assert_ne!(answer(&pool, &owner, &id, ANSWER).await.status, 202);
+    // A demoted admin loses the view; the role decides, not the person.
+    let (second_admin_id, second_admin) = admin(&pool, "second-admin@example.com").await;
     assert_eq!(
-        get(&app(&pool), "/v1/interventions", &staff).await.body["items"],
-        json!([])
+        get(&app(&pool), "/v1/interventions", &second_admin)
+            .await
+            .status,
+        200
     );
+    let org = common::organization(&pool, "Test organization").await;
+    assert!(
+        db::api_keys::set_membership(
+            &pool,
+            "second-admin@example.com",
+            db::api_keys::Membership::Organization(org)
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        get(&app(&pool), "/v1/interventions", &second_admin)
+            .await
+            .status,
+        403
+    );
+
+    // The admin answers; who did is recorded, and one answer is all a challenge takes.
+    assert_eq!(answer(&pool, &admin_key, &first, ANSWER).await.status, 202);
+    let by: Uuid = sqlx::query_scalar(
+        "SELECT answered_by FROM human_interventions WHERE answered_by IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let admin_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'admin@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(by, admin_id);
+    assert_ne!(by, second_admin_id);
+    assert_eq!(answer(&pool, &admin_key, &first, ANSWER).await.status, 409);
+    let left = get(&app(&pool), "/v1/interventions", &admin_key).await;
+    assert_eq!(left.body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(left.body["items"][0]["tracking_number"], "DUMMY-OK-2");
 }

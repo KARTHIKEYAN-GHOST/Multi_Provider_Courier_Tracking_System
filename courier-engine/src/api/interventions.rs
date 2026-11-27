@@ -1,8 +1,8 @@
-//! `/v1/interventions` — challenges (one-time codes, CAPTCHAs) waiting for the caller.
+//! `/v1/interventions` — challenges (one-time codes, CAPTCHAs) waiting for an answer.
 //!
-//! A challenge is visible only to the user it was assigned to; anyone else gets 404, exactly
-//! as for a challenge that does not exist. The answer is write-only: it can be submitted
-//! once and is never returned by any endpoint.
+//! Only admins see and answer them, every organization's alike; an organization user gets
+//! 403. The answer is write-only: it can be submitted once and is never returned by any
+//! endpoint.
 
 use axum::{
     Extension, Json,
@@ -27,6 +27,17 @@ use crate::{
 
 const NOT_FOUND: ApiError = ApiError::NotFound("intervention");
 
+fn require_admin(caller: &Caller) -> Result<(), ApiError> {
+    if caller.is_admin() {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden {
+            code: "admins_only",
+            message: "only admins see and answer verification requests",
+        })
+    }
+}
+
 fn view(row: &InterventionRow) -> Value {
     json!({
         "id": row.id,
@@ -37,17 +48,17 @@ fn view(row: &InterventionRow) -> Value {
         "has_image": row.has_image,
         "expires_at": row.expires_at,
         "created_at": row.created_at,
-        "tracking_request_id": row.tracking_request_id,
         "provider_code": row.provider_code,
         "tracking_number": row.tracking_number,
     })
 }
 
-/// GET /v1/interventions — the caller's open challenges.
+/// GET /v1/interventions — every open challenge, oldest first.
 pub async fn list(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<Value>, ApiError> {
+    require_admin(&caller)?;
     let rows = interventions::list_pending(&state.pool, caller.user_id).await?;
     Ok(Json(
         json!({ "items": rows.iter().map(view).collect::<Vec<_>>() }),
@@ -60,6 +71,7 @@ pub async fn get_one(
     Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    require_admin(&caller)?;
     let id = Uuid::parse_str(&id).map_err(|_| NOT_FOUND)?;
     let (row, image) = interventions::find(&state.pool, caller.user_id, id)
         .await?
@@ -87,6 +99,7 @@ pub async fn respond(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ResponseBody>,
 ) -> Result<Response, ApiError> {
+    require_admin(&caller)?;
     let id = Uuid::parse_str(&id).map_err(|_| NOT_FOUND)?;
     let Some(store) = state.secrets.as_deref() else {
         return Err(ApiError::Unavailable("answer store"));

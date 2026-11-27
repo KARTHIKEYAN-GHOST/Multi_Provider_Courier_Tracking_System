@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import Settings
-from .engine import EngineClient, EngineUnavailable, NotSignedIn
+from .engine import EngineClient, EngineUnavailable, NotAnAdmin, NotSignedIn
 from .signins import SignIn, SignIns
 
 COOKIE = "hi_session"
@@ -50,8 +50,17 @@ _NOTICES = {
     "expired": ("This request is no longer open.", "error"),
     "signed_out": ("You are signed out.", "info"),
     "bad_key": ("That API key was not accepted.", "error"),
+    "admins_only": (
+        "Only admins answer verification requests. Your organization's lookups continue on their own.",
+        "error",
+    ),
     "unavailable": ("The tracking service cannot be reached right now. Please try again.", "error"),
 }
+
+
+def refusal(error: NotSignedIn) -> str:
+    """The notice shown after signing a user out."""
+    return "admins_only" if isinstance(error, NotAnAdmin) else "bad_key"
 
 
 def image_src(image: Any) -> str | None:
@@ -146,6 +155,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         # The key is checked by using it: the Engine is the only judge of API keys.
         try:
             await engine.pending(api_key.strip())
+        except NotAnAdmin:
+            return page("login.html", 403, notice="admins_only", csrf=None)
         except NotSignedIn:
             return page("login.html", 401, notice="bad_key", csrf=None)
         except EngineUnavailable:
@@ -177,8 +188,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return to("/login")
         try:
             items = await engine.pending(user.api_key)
-        except NotSignedIn:
-            return sign_out(request, "bad_key")
+        except NotSignedIn as refused:
+            return sign_out(request, refusal(refused))
         except EngineUnavailable:
             return page(
                 "list.html", 503, notice="unavailable", items=[], csrf=user.csrf, refresh_s=settings.refresh_s
@@ -217,8 +228,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return to("/login")
         try:
             return await detail(user, intervention_id)
-        except NotSignedIn:
-            return sign_out(request, "bad_key")
+        except NotSignedIn as refused:
+            return sign_out(request, refusal(refused))
         except EngineUnavailable:
             return to("/interventions?notice=unavailable")
 
@@ -263,8 +274,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                     csrf=user.csrf,
                 )
             return to(f"/interventions?notice={submitted.outcome}")
-        except NotSignedIn:
-            return sign_out(request, "bad_key")
+        except NotSignedIn as refused:
+            return sign_out(request, refusal(refused))
         except EngineUnavailable:
             return to("/interventions?notice=unavailable")
 

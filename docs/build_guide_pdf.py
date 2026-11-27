@@ -378,7 +378,8 @@ T(["Command", "What it does"], [
 H2("Trying it by hand")
 C("""
 make up-deps && make migrate
-cd courier-engine && cargo run -- admin create-user --email you@example.com   # prints the key once
+cd courier-engine && cargo run -- admin create-organization --name "Acme Traders"
+cargo run -- admin create-user --email you@example.com --organization "Acme Traders"   # key printed once
 make run-engine          # terminal 1
 make run-worker          # terminal 2
 curl -H "Authorization: Bearer <key>" -H 'content-type: application/json' \\
@@ -558,18 +559,17 @@ B("job.resume is delivered to the adapter's normal jobs queue instead of a separ
   "Challenges have their own limit (max_challenges) instead of using up retry attempts.")
 
 # ---------------------------------------------------------------- 14
-H1("14. Five Indian couriers")
-P("Between Phase 8 and Phase 9 five adapters were added. Each was written from what the courier publishes or from what its public tracking page does. "
+H1("14. Indian couriers")
+P("Between Phase 8 and Phase 9 five adapters were added; SkyKing was removed again in Phase 11, so four remain. Each was written from what the courier publishes or from what its public tracking page does. "
   "No consignment was looked up on any courier's system, so none has been tried against the real service. Full details are in docs/indian-couriers.md.")
 T(["Courier", "How it is tracked", "Needs before use"], [
   ["Delhivery", "Official tracking API with an account token", "API token (stored as a credential)"],
   ["Safexpress", "Customer API: OAuth2 client credentials and an API key. The public website demands an OTP and a CAPTCHA.", "Client id, client secret, API key; endpoint address to be confirmed"],
-  ["SkyKing", "The JSON service behind its tracking page (two calls)", "SkyKing's permission"],
   ["ABT Parcel Service", "The tracking form on its website. Tracking was switched off for maintenance in November 2026.", "ABT's permission; a saved result page"],
   ["Balaji Roadlines", "The LR tracking page of Sri Balaji Transport Lines", "The company's permission; a saved result page"],
 ], [32, 76, 56])
 H2("Safe by default")
-B("All five are in the database, but the Engine refuses a job for any of them until its requirement is met: a stored credential for the two APIs, a recorded permission for the three websites.",
+B("All four are in the database, but the Engine refuses a job for any of them until its requirement is met: a stored credential for the two APIs, a recorded permission for the two websites.",
   "The ABT and Balaji result pages could not be examined. Their adapters read a page only if it has a table with a date column and a status column; anything else is reported as SCHEMA_DRIFT, never guessed.",
   "Access data found inside Safexpress's website script belongs to Safexpress and is not used.")
 H2("Important functions")
@@ -670,9 +670,8 @@ B("Reach anything but the adapter's approved hosts. A local or private address n
   "It is told never to solve or bypass a CAPTCHA or one-time code, and to write the adapter so that a person is asked.")
 P("In agent mode, requesting an adapter or a repair makes the agent open the courier's website and look up a consignment at most twice. Do this only for sites you may access this way.")
 
-H2("Staff answer the challenges")
-B("The people who use this system are the company's own staff. Every user therefore sees every open one-time code and CAPTCHA, oldest first, and may answer any of them.",
-  "A challenge takes one answer, and who gave it is recorded. One user, for example an account a program uses, can be restricted to the challenges of its own lookups with admin set-staff.")
+H2("Staff answer the challenges (replaced in Phase 11)")
+P("In Phase 10 every user saw and answered every open challenge. Since Phase 11 only admins do; see chapter 17.")
 H2("A courier is paused while its adapter is repaired")
 B("While a repair task is waiting or being worked on, a new tracking request is accepted but no lookup is started; the Engine looks again every five minutes and starts it when the repair has ended.",
   "A manual refresh is answered with 409 provider_under_repair, and automatic polls are postponed.",
@@ -681,9 +680,47 @@ H2("The agent in a container")
 P("make up-ai starts the repair service as a container with the browser and the checking tools. It receives only its own settings, runs as an unprivileged user without capabilities, and needs Docker's system-call filter switched off for its sandboxes. The image has not been built or run yet.")
 
 # ---------------------------------------------------------------- 17
-H1("17. Current state, open points and what comes next")
+H1("17. Phase 11: organizations, roles, test data, Claude")
+P("The system runs on one server for many organizations. Full details and step-by-step tests are in docs/phase-11.md.")
+H2("Two roles")
+T(["", "Organization user", "Admin"], [
+  ["Belongs to", "exactly one organization", "the platform operator; no organization"],
+  ["Tracking requests", "only their own", "only their own (usually none)"],
+  ["One-time codes, CAPTCHAs", "never: 403 admins_only", "all organizations' in one queue, oldest first; answers them"],
+  ["Command line", "no", "the operator"]], [40, 60, 66])
+B("The same number with the same courier, tracked by two organizations, is one shipment and one lookup; each sees only its own request.",
+  "A disabled organization's API keys stop working at once. The database refuses an organization user without an organization and an admin with one.",
+  "Users that existed before were moved into \"Default organization\"; nobody is an admin until named with admin set-role.",
+  "Commands: create-organization, create-user --organization NAME | --admin, set-role, list-users. set-staff is gone.")
+H2("Testing with data put straight into the database")
+P("Organizations, users, shipments and tracking requests may be inserted by hand; infrastructure/test-data.sql is an example (two organizations, five users, three shipments, one shared). "
+  "API keys, jobs, outbox messages, credentials and answers may not: keys are stored only as hashes, jobs and their messages are written together by the Engine, secrets are encrypted. "
+  "make seed-test-data loads the file and prints one key per user; a lookup is then started with POST /v1/tracking-requests/{id}/refresh. An Engine test loads the same file on every run.")
+H2("Claude as the agent's model")
+T(["AI_REPAIR_MODEL_SUPPLIER", "Signs in with", "For"], [
+  ["openrouter (default)", "OPENROUTER_API_KEY", "free models while developing"],
+  ["claude-code", "CLAUDE_CODE_OAUTH_TOKEN from claude setup-token (a Claude subscription)", "your laptop"],
+  ["anthropic", "ANTHROPIC_API_KEY", "the server used by many organizations"]], [40, 80, 46])
+P("A subscription's sign-in may not power a product offered to others unless Anthropic has approved it, so the server uses an API key. "
+  "With claude-code, Claude Code runs only as a model: no tools, no MCP servers, no settings or project files, a minimal environment holding only the token.")
+H2("Important functions")
+M("db/api_keys.rs: find_usable_by_prefix", "Every request must know who is calling, in which role and for which organization, and a disabled organization must be shut out.",
+  "One query joins the key, its user and the user's organization; it returns the role and organization only if the key is not revoked, the user is active and the organization (if any) is active.")
+M("api/interventions.rs: require_admin", "Only admins may see or answer one-time codes and CAPTCHAs.",
+  "Every challenge endpoint checks the caller's role first and answers 403 admins_only otherwise. The SQL behind it checks the admin role again, so a mistake in one place does not open the queue.")
+M("cli.rs: create-organization / create-user / set-role", "Organizations and roles are managed by the operator.",
+  "An organization name is unique regardless of case; creating it again keeps the existing one. A user is created either with --organization (which must exist) or with --admin; the database constraint keeps role and organization consistent.")
+M("llm.py: ClaudeCodeModel.complete", "Claude through a setup token is reached only through the Claude Code program.",
+  "Runs claude --print with tools off, the system prompt as an argument and the conversation on stdin, in a new empty directory used as home and configuration; reads the JSON result and tells a rate limit (try again) from a refused token (stop).")
+M("llm.py: AnthropicModel.complete", "On the server Claude is reached with an API key through Anthropic's official SDK.",
+  "Streams the answer with adaptive thinking and the configured effort; a refusal or a cut-off answer is never taken as an answer; the SDK waits out rate limits and retries.")
+M("migration 0019_remove_skyking.sql", "SkyKing was to be removed from the system.",
+  "Deletes its provider, adapter, mappings, tokens and open repair tasks; a database that already holds SkyKing shipments keeps the rows switched off instead, so no history is lost.")
+
+# ---------------------------------------------------------------- 18
+H1("18. Current state, open points and what comes next")
 H2("Verified")
-B("958 automated tests pass: 99 contract, 192 Engine, 450 adapter, 29 human-interface, 131 AI repair service, 57 end-to-end.",
+B("951 automated tests pass: 99 contract, 195 Engine, 426 adapter, 31 human-interface, 143 AI repair service, 57 end-to-end (SkyKing's 24 adapter tests left with it).",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
@@ -691,7 +728,7 @@ B("The Docker images and the full container stack (make up, make smoke) had not 
   "The GitHub Actions workflow has been written but never run.",
   "The DHL adapter has never called the real DHL API; no real website has been scraped (that needs the site owner's permission).",
   "The AI repair service has written one adapter (The Professional Couriers) with a free model and pushed it to GitHub; that adapter has never read a real result page.",
-  "The agent of Phase 10 is tested with a stand-in model that answers from a script and with the real browser against the demo site. It has not yet completed a task with a real model.",
+  "The agent of Phase 10 is tested with a stand-in model that answers from a script and with the real browser against the demo site. It has not yet completed a task with a real model; the Claude suppliers of Phase 11 are tested with stand-ins only.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
@@ -706,8 +743,9 @@ T(["Phase", "Deliverable"], [
   ["8 (done)", "Redis, sessions, OTP / CAPTCHA intervention workflow, minimal human interface"],
   ["9 (done)", "AI repair service: repairs a broken adapter or writes one for a new courier, checks it in a sandbox and pushes it to GitHub"],
   ["10 (done)", "The agent: browser, HTTP client and code environment for the AI, with any model; staff answer CAPTCHAs and one-time codes; a courier is paused during its repair; container for the agent"],
-  ["11", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
-  ["12", "Production images and deployment documentation"]], [16, 150])
+  ["11 (done)", "Organizations with two roles (organization user, admin); test data straight into the database; Claude in the agent (setup token or API key); SkyKing removed"],
+  ["12", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
+  ["13", "Production images and deployment documentation"]], [16, 150])
 H2("Glossary")
 T(["Term", "Meaning"], [
   ["Adapter", "Python class that talks to one courier."], ["Worker", "A process running one adapter for many jobs at once."],

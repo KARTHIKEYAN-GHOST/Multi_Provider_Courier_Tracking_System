@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Three secrets live here and nowhere else: the Engine's repair token, the OpenRouter key
-    and the GitHub token. None of them is ever given to the model, written into the
-    repository or passed into the sandbox."""
+    """The secrets live here and nowhere else: the Engine's repair token, the model supplier's
+    key (OpenRouter key, Claude setup token or Anthropic API key) and the GitHub token. None
+    of them is ever given to the model, written into the repository or passed into the
+    sandbox."""
 
     # An empty value counts as "not set": Compose passes every listed setting, also the
     # ones the operator left out, and those must fall back to the defaults here.
@@ -20,6 +22,21 @@ class Settings(BaseSettings):
     #: The Engine's internal API, e.g. http://127.0.0.1:8081
     ai_repair_engine_url: str = "http://127.0.0.1:8081"
     engine_repair_token: SecretStr = SecretStr("")
+
+    #: Who supplies the model: openrouter, claude-code (Claude with a setup token from
+    #: "claude setup-token", for a laptop) or anthropic (Claude with an API key, for a server).
+    ai_repair_model_supplier: Literal["openrouter", "claude-code", "anthropic"] = "openrouter"
+
+    #: claude-code: the token "claude setup-token" prints (valid one year).
+    claude_code_oauth_token: SecretStr = SecretStr("")
+    #: anthropic: an API key from platform.claude.com.
+    anthropic_api_key: SecretStr = SecretStr("")
+    #: The Claude model for both Claude suppliers, and how hard it thinks
+    #: (low, medium, high, xhigh, max).
+    ai_repair_claude_model: str = "claude-opus-5-5"
+    ai_repair_claude_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    #: The Claude Code program (claude-code supplier).
+    ai_repair_claude_command: str = "claude"
 
     openrouter_api_key: SecretStr = SecretStr("")
     #: The model that writes the code: a name from openrouter.ai/models, or several separated
@@ -68,11 +85,25 @@ class Settings(BaseSettings):
             return self.ai_repair_repo_url
         return f"https://github.com/{self.ai_repair_github_repo}.git"
 
+    def model_key(self) -> tuple[str, str]:
+        """The name and value of the setting that holds the chosen supplier's secret."""
+        if self.ai_repair_model_supplier == "claude-code":
+            return "CLAUDE_CODE_OAUTH_TOKEN", self.claude_code_oauth_token.get_secret_value()
+        if self.ai_repair_model_supplier == "anthropic":
+            return "ANTHROPIC_API_KEY", self.anthropic_api_key.get_secret_value()
+        return "OPENROUTER_API_KEY", self.openrouter_api_key.get_secret_value()
+
+    def model_name(self) -> str:
+        if self.ai_repair_model_supplier == "openrouter":
+            return self.openrouter_model
+        return self.ai_repair_claude_model
+
     def missing(self) -> list[str]:
         """Names of required settings that are not set."""
+        key_name, key = self.model_key()
         needed = {
             "ENGINE_REPAIR_TOKEN": self.engine_repair_token.get_secret_value(),
-            "OPENROUTER_API_KEY": self.openrouter_api_key.get_secret_value(),
+            key_name: key,
             "AI_REPAIR_GITHUB_REPO": self.ai_repair_github_repo or self.ai_repair_repo_url,
         }
         if not self.ai_repair_repo_url and not self.ai_repair_dry_run:

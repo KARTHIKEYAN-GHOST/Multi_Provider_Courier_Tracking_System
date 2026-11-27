@@ -1,6 +1,9 @@
-# Indian couriers: Delhivery, Safexpress, SkyKing, ABT, Balaji Roadlines
+# Indian couriers: Delhivery, Safexpress, ABT, Balaji Roadlines
 
-Five adapters added between Phase 8 and Phase 9. Each was written from what the courier
+> **Changed in Phase 11.** The SkyKing adapter was removed (code, tests, queues, worker and,
+> with migration `0019_remove_skyking.sql`, its database rows). Four of the original five remain.
+
+Five adapters were added between Phase 8 and Phase 9; four remain. Each was written from what the courier
 publishes or from what its public tracking page does. **No consignment was looked up on any
 courier's system while writing them**, so none has been tried against the real service.
 
@@ -8,11 +11,10 @@ courier's system while writing them**, so none has been tried against the real s
 |---|---|---|---|---|---|
 | `delhivery` | Delhivery | Official "Order Tracking" API, `GET /api/v1/packages/json/?waybill=` | `api` | Delhivery API token | High: written from Delhivery's API description |
 | `safexpress` | Safexpress | Customer waybill tracking API (OAuth2 client credentials + API key) | `api` | Client id, client secret, API key from Safexpress | Medium: request and answer outline confirmed, endpoint address not |
-| `skyking` | SkyKing | The JSON service behind the page skyking.co/track | `scrape` | SkyKing's permission | Medium: request and field names read from the page; date format not seen |
 | `abt` | ABT Parcel Service | The "Track Shipment" form on abtlogistics.com (`POST track_submit.php`) | `scrape` | ABT's permission, and ABT switching tracking back on | Low: result page never seen |
 | `balaji` | Balaji Roadlines (Sri Balaji Transport Lines) | The "LR Tracking" page, `GET /Website/tracking?lrno=` | `scrape` | The company's permission | Low: result page never seen |
 
-All five are in the database after migration `0013_indian_couriers.sql` and are listed by
+All four are in the database after migration `0013_indian_couriers.sql` and are listed by
 `GET /v1/providers`, but the Engine refuses to create a job for any of them until its
 requirement is met (`409 provider_unavailable`).
 
@@ -60,16 +62,6 @@ courier-engine admin set-credential --provider safexpress --label main
 courier-engine admin create-worker-token --adapter safexpress            # -> SAFEXPRESS_WORKER_TOKEN
 ```
 
-## SkyKing
-
-- SkyKing publishes no API. Its tracking page gets a consignment's history as JSON from
-  `https://live.skyking.co` in two calls: one for the page's access key, one for the history
-  (`/api/Track/ConsignmentMTrack_WebSite_AuthNew?cnote=`). The adapter repeats them.
-- A lookup needs no CAPTCHA. (The reCAPTCHA on that page guards the "send me alerts" form.)
-- Answer: a list of entries with `DateTime`, `Status`, `Location`; an empty list means unknown.
-- This is use of a website's internal service. Ask SkyKing first; with a customer account
-  they may offer a proper API instead.
-
 ## ABT Parcel Service
 
 - ABT publishes no API. Its site has a form: `POST https://abtlogistics.com/track_submit.php`
@@ -89,14 +81,13 @@ courier-engine admin create-worker-token --adapter safexpress            # -> SA
 - The site's HTTPS certificate had expired, so the address is plain HTTP.
 - The result page could not be examined. It is read by the general table reader (below).
 
-## What the three website adapters need from you
+## What the two website adapters need from you
 
 1. **Permission** from each company to query its site automatically. Then:
-   `courier-engine admin set-scraping-authorized --provider <skyking|abt|balaji> --authorized true`
+   `courier-engine admin set-scraping-authorized --provider <abt|balaji> --authorized true`
 2. For `abt` and `balaji`: **one saved result page each** (open the tracking page in a
    browser, look up a real LR number, save the page as HTML). With it the reading can be
-   confirmed or corrected and the page becomes a test fixture. For `skyking`: one real
-   answer, to confirm the date format.
+   confirmed or corrected and the page becomes a test fixture.
 
 Until then `abt` and `balaji` use `adapters/tables.py`: it looks for an HTML table whose
 header names a date column and a status column and reads its rows. A page that says "no
@@ -105,7 +96,7 @@ never guesses.
 
 ## Status wording
 
-Delhivery has a fixed vocabulary. The other four describe statuses in sentences, which
+Delhivery has a fixed vocabulary. The other three describe statuses in sentences, which
 cannot be mapped one by one. `adapters/india.py` reduces recognized wording to seven codes
 (`booked`, `picked-up`, `in-transit`, `out-for-delivery`, `delivered`, `undelivered`,
 `returned`), which migration 0013 maps. Wording it does not recognize is passed on
@@ -117,9 +108,9 @@ Times without an offset are taken as IST. Dates such as `03-04-2026` are read da
 ## Running the workers
 
 ```
-make up-couriers                                   # all five
+make up-couriers                                   # all Indian couriers
 docker compose --profile delhivery up -d           # one
-uv run python -m adapters.skyking                  # without Docker, from courier-adapters/
+uv run python -m adapters.balaji                   # without Docker, from courier-adapters/
 ```
 
 | Setting | Meaning |
@@ -127,13 +118,13 @@ uv run python -m adapters.skyking                  # without Docker, from courie
 | `DELHIVERY_WORKER_TOKEN`, `SAFEXPRESS_WORKER_TOKEN` | Worker tokens for fetching the credential from the Engine |
 | `DELHIVERY_BASE_URL` | Default `https://track.delhivery.com` |
 | `SAFEXPRESS_TOKEN_URL`, `SAFEXPRESS_TRACKING_URL`, `SAFEXPRESS_SCOPE` | Override the unconfirmed defaults |
-| `SKYKING_BASE_URL`, `ABT_BASE_URL`, `BALAJI_BASE_URL` | Site addresses |
+| `ABT_BASE_URL`, `BALAJI_BASE_URL` | Site addresses |
 
-None of the five is polled automatically. Set a polling policy per provider once it works.
+None of them is polled automatically. Set a polling policy per provider once it works.
 
 ## Tests
 
-`courier-adapters/tests/test_{delhivery,safexpress,skyking}_adapter.py`,
+`courier-adapters/tests/test_{delhivery,safexpress}_adapter.py`,
 `test_abt_balaji_adapters.py`, `test_india_helpers.py`; `courier-engine/tests/indian_couriers.rs`.
 Every test runs against a mocked courier. The example answers are built from documented or
 observed field names; the ABT and Balaji result pages in the tests are invented.

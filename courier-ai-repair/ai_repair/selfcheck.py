@@ -17,7 +17,7 @@ from pathlib import Path
 from .agent.browser import Browser
 from .agent.net import Net, NetRefused
 from .config import Settings
-from .llm import ModelError, OpenRouterModel
+from .llm import ModelError, build_model
 from .sandbox import Bubblewrap, python_roots
 from .workspace import GitError, Workspace
 
@@ -126,18 +126,13 @@ def main() -> int:
             ws.remove()
 
     # One short question. A refusal for the rate limit is the supplier's state, not a fault here.
-    model = OpenRouterModel(
-        settings.openrouter_api_key.get_secret_value(),
-        settings.openrouter_model,
-        settings.openrouter_base_url,
-        60,
-        2000,
-        retries=0,
-        retry_wait_s=0,
-    )
+    model = build_model(settings, timeout_s=120, max_tokens=2000, retries=0, retry_wait_s=0)
     try:
         model.complete("Answer with the single word: ready", [{"role": "user", "content": "Are you there?"}])
-        print(f"OK     model: answers ({getattr(model, 'last_model', model.name)})")
+        print(
+            f"OK     model: answers ({settings.ai_repair_model_supplier}: "
+            f"{getattr(model, 'last_model', model.name)})"
+        )
     except ModelError as error:
         print(
             f"NOTE   model: no answer now ({str(error)[:200]}). A repair would wait or fail for this reason."

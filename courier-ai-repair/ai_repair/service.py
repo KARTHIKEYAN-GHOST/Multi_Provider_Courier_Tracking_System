@@ -38,7 +38,7 @@ from .workspace import GitError, Workspace
 log = structlog.get_logger()
 
 #: Shown to the model when it writes a new adapter: one of each kind, plus the shared helpers.
-_REFERENCE = {"api": "skyking", "scrape": "balaji"}
+_REFERENCE = {"api": "delhivery", "scrape": "balaji"}
 _SHARED = (f"{ADAPTERS}/india.py", f"{ADAPTERS}/tables.py", f"{TESTS}/adapter_support.py")
 
 

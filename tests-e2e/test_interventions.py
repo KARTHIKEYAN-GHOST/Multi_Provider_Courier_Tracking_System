@@ -1,8 +1,9 @@
 """Phase 8 end to end: a lookup that needs a person.
 
 The demo courier website puts some shipments behind a one-time code (``DEMO-OTP-``) or a
-CAPTCHA (``DEMO-CAPTCHA-``). The worker stops, the Engine asks the user, the user answers
-through the API (or the human interface), and the same attempt continues.
+CAPTCHA (``DEMO-CAPTCHA-``). The worker stops, the Engine opens a challenge, an admin answers
+it through the API (or the human interface), and the same attempt continues. Organization
+users track shipments but never see challenges.
 
 These tests need a Redis for the workers' sessions (``make up-deps``); without one they are
 skipped.
@@ -42,21 +43,24 @@ def wrong(answer: str) -> str:
     return str((int(answer) + 1) % 10 ** len(answer)).zfill(len(answer))
 
 
-def pending(user: User) -> list[dict]:
-    return list(user.http.get("/interventions").json()["items"])
+def pending(stack: Stack) -> list[dict]:
+    """The admins' queue of open challenges."""
+    return list(stack.answerer().http.get("/interventions").json()["items"])
 
 
-def challenge_for(user: User, request_id: str) -> dict:
-    """The open challenge that belongs to a tracking request."""
-
-    def probe() -> dict | None:
-        return next((i for i in pending(user) if i["tracking_request_id"] == request_id), None)
-
-    return wait_until(probe, 20, f"a challenge for {request_id}")
+def open_for(stack: Stack, tracking_number: str, seen: set[str] | frozenset[str] = frozenset()) -> dict | None:
+    return next((i for i in pending(stack) if i["tracking_number"] == tracking_number and i["id"] not in seen), None)
 
 
-def answer(user: User, intervention_id: str, response: str) -> httpx.Response:
-    return user.http.post(f"/interventions/{intervention_id}/response", json={"response": response})
+def challenge_for(stack: Stack, tracking_number: str) -> dict:
+    """The open challenge of a shipment, as the admins see it."""
+    return wait_until(lambda: open_for(stack, tracking_number), 20, f"a challenge for {tracking_number}")
+
+
+def answer(stack: Stack, intervention_id: str, response: str, by: User | None = None) -> httpx.Response:
+    """An admin (or ``by``) answers a challenge."""
+    who = by or stack.answerer()
+    return who.http.post(f"/interventions/{intervention_id}/response", json={"response": response})
 
 
 def interventions(stack: Stack, job_id: str) -> list[dict]:
@@ -83,7 +87,7 @@ def test_a_one_time_code_is_asked_for_answered_and_the_same_attempt_continues(st
     waiting = user.wait_for(request_id, OTP)["latest_job"]
     assert waiting["attempt"] == 1
 
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     assert challenge["kind"] == "otp"
     assert challenge["status"] == "pending"
     assert challenge["has_image"] is False
@@ -92,7 +96,7 @@ def test_a_one_time_code_is_asked_for_answered_and_the_same_attempt_continues(st
     assert len(stack.session_keys()) >= 1, "the worker parked its session in Redis"
 
     code = otp(tracking_number)
-    assert answer(user, challenge["id"], code).status_code == 202
+    assert answer(stack, challenge["id"], code).status_code == 202
 
     view = user.wait_for(request_id)
     job = view["latest_job"]
@@ -112,7 +116,7 @@ def test_a_one_time_code_is_asked_for_answered_and_the_same_attempt_continues(st
     assert interventions(stack, job["id"]) == [
         {"sequence": 1, "kind": "otp", "status": "completed", "attempt": 1, "wiped": True, "no_image": True}
     ]
-    assert pending(user) == []
+    assert pending(stack) == []
     # The answer travelled in no message and no log line.
     messages = stack.query(
         "SELECT payload::text AS body FROM outbox_messages WHERE payload::text LIKE %s", f"%{job['id']}%"
@@ -133,12 +137,12 @@ def test_the_session_in_redis_is_ciphertext_and_removed_after_use(stack: Stack, 
     wait_until(lambda: not stack.session_keys(), 20, "earlier sessions to be used up")
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     (key,) = stack.session_keys()
     assert key.startswith(f"{stack.session_prefix}demosite:")
     (stored,) = stack.session_values()
     assert b"token" not in stored, "the session is encrypted before it leaves the worker"
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
+    assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 202
     user.wait_for(request_id)
     wait_until(lambda: not stack.session_keys(), 10, "the used session to be removed")
 
@@ -149,15 +153,15 @@ def test_a_captcha_is_shown_to_the_user_as_a_picture_and_their_answer_continues_
     tracking_number = number("CAPTCHA", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
     user.wait_for(request_id, CAPTCHA)
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     assert (challenge["kind"], challenge["has_image"]) == ("captcha", True)
 
-    detail = user.http.get(f"/interventions/{challenge['id']}").json()
+    detail = stack.answerer().http.get(f"/interventions/{challenge['id']}").json()
     assert detail["image"]["content_type"] == "image/png"
     assert base64.b64decode(detail["image"]["data"]).startswith(b"\x89PNG\r\n\x1a\n")
 
     # The person reads the picture. (The test knows the demo site's rule instead.)
-    assert answer(user, challenge["id"], site_answer("captcha", tracking_number, 5)).status_code == 202
+    assert answer(stack, challenge["id"], site_answer("captcha", tracking_number, 5)).status_code == 202
     job = user.wait_for(request_id)["latest_job"]
     assert (job["status"], job["outcome"], job["attempt"]) == ("COMPLETED", "SUCCESS", 1)
     (row,) = interventions(stack, job["id"])
@@ -167,28 +171,27 @@ def test_a_captcha_is_shown_to_the_user_as_a_picture_and_their_answer_continues_
 def test_an_answer_of_the_wrong_form_is_refused_at_once_and_the_challenge_stays_open(stack: Stack, user: User) -> None:
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     for malformed in ("12345", "1234567", "12345a", ""):
-        assert answer(user, challenge["id"], malformed).status_code == 422
+        assert answer(stack, challenge["id"], malformed).status_code == 422
     assert user.job(request_id)["status"] == OTP
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 409, "an answer is given once"
+    assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 202
+    assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 409, "an answer is given once"
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 
 def test_a_wrong_code_leads_to_a_second_challenge_and_the_right_code_then_completes(stack: Stack, user: User) -> None:
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    first = challenge_for(user, request_id)
-    assert answer(user, first["id"], wrong(otp(tracking_number))).status_code == 202
+    first = challenge_for(stack, tracking_number)
+    assert answer(stack, first["id"], wrong(otp(tracking_number))).status_code == 202
 
     def second_challenge() -> dict | None:
-        found = [i for i in pending(user) if i["tracking_request_id"] == request_id and i["id"] != first["id"]]
-        return found[0] if found else None
+        return open_for(stack, tracking_number, {first["id"]})
 
     second = wait_until(second_challenge, 20, "the site to ask again")
     assert second["prompt"].startswith("The previous answer was not accepted.")
-    assert answer(user, second["id"], otp(tracking_number)).status_code == 202
+    assert answer(stack, second["id"], otp(tracking_number)).status_code == 202
 
     job = user.wait_for(request_id)["latest_job"]
     assert (job["status"], job["attempt"]) == ("COMPLETED", 1)
@@ -205,27 +208,21 @@ def test_a_job_stops_asking_once_the_providers_challenge_limit_is_reached(stack:
         request_id = user.submit(tracking_number, "demosite")
         seen: set[str] = set()
         for _ in range(2):
-            challenge = wait_until(
-                lambda: next(
-                    (i for i in pending(user) if i["tracking_request_id"] == request_id and i["id"] not in seen), None
-                ),
-                20,
-                "a challenge",
-            )
+            challenge = wait_until(lambda: open_for(stack, tracking_number, seen), 20, "a challenge")
             seen.add(challenge["id"])
-            assert answer(user, challenge["id"], wrong(otp(tracking_number))).status_code == 202
+            assert answer(stack, challenge["id"], wrong(otp(tracking_number))).status_code == 202
         job = user.wait_for(request_id)["latest_job"]
     finally:
         stack.execute("UPDATE providers SET max_challenges = 3 WHERE code = 'demosite'")
     assert (job["status"], job["last_error_class"], job["attempt"]) == ("FAILED", "CHALLENGE_LIMIT_EXCEEDED", 1)
     assert [i["status"] for i in interventions(stack, job["id"])] == ["rejected", "rejected"]
-    assert pending(user) == []
+    assert pending(stack) == []
 
 
 def test_a_challenge_nobody_answers_expires_and_can_no_longer_be_answered(stack: Stack, user: User) -> None:
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     job_id = user.job(request_id)["id"]
     # Move time: the deadline passed a moment ago.
     stack.execute(
@@ -235,14 +232,14 @@ def test_a_challenge_nobody_answers_expires_and_can_no_longer_be_answered(stack:
 
     job = user.wait_for(request_id, "EXPIRED")["latest_job"]
     assert job["last_error_class"] == "INTERVENTION_EXPIRED"
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 410
-    assert pending(user) == []
+    assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 410
+    assert pending(stack) == []
     assert [i["status"] for i in interventions(stack, job_id)] == ["expired"]
     # The shipment can be looked up again: that starts a fresh job and a fresh challenge.
     assert user.http.post(f"/tracking-requests/{request_id}/refresh").status_code == 202
-    again = challenge_for(user, request_id)
+    again = challenge_for(stack, tracking_number)
     assert again["id"] != challenge["id"]
-    assert answer(user, again["id"], otp(tracking_number)).status_code == 202
+    assert answer(stack, again["id"], otp(tracking_number)).status_code == 202
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 
@@ -250,13 +247,12 @@ def test_a_lost_session_restarts_the_lookup_and_asks_again(stack: Stack, user: U
     with stack.provider("demosite", retry_base_ms=100, max_attempts=3):
         tracking_number = number("OTP", "DEMO")
         request_id = user.submit(tracking_number, "demosite")
-        first = challenge_for(user, request_id)
+        first = challenge_for(stack, tracking_number)
         assert stack.drop_sessions() >= 1  # Redis was restarted, or the session timed out
-        assert answer(user, first["id"], otp(tracking_number)).status_code == 202
+        assert answer(stack, first["id"], otp(tracking_number)).status_code == 202
 
         def asked_again() -> dict | None:
-            found = [i for i in pending(user) if i["tracking_request_id"] == request_id and i["id"] != first["id"]]
-            return found[0] if found else None
+            return open_for(stack, tracking_number, {first["id"]})
 
         second = wait_until(asked_again, 30, "the lookup to restart and ask again")
         job = user.job(request_id)
@@ -265,34 +261,41 @@ def test_a_lost_session_restarts_the_lookup_and_asks_again(stack: Stack, user: U
             "SELECT error_class::text AS c FROM job_attempts WHERE job_id = %s ORDER BY attempt", job["id"]
         )
         assert errors[0]["c"] == "SESSION_LOST"
-        assert answer(user, second["id"], otp(tracking_number)).status_code == 202
+        assert answer(stack, second["id"], otp(tracking_number)).status_code == 202
         assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 
-def test_every_user_is_staff_and_a_restricted_one_sees_only_their_own(stack: Stack, user: User) -> None:
-    colleague, restricted = stack.new_user(), stack.new_user()
-    stack.admin("set-staff", "--email", restricted.email, "--staff", "false")
-    tracking_number = number("OTP", "DEMO")
+def test_only_admins_see_and_answer_challenges_of_every_organization(stack: Stack, user: User) -> None:
+    other_org = stack.new_user(organization="E2E second organization")
+    tracking_number, theirs = number("OTP", "DEMO"), number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    other_request = other_org.submit(theirs, "demosite")
+    challenge = challenge_for(stack, tracking_number)
+    second = challenge_for(stack, theirs)
 
-    # A user restricted to their own lookups sees nothing of it and cannot answer it.
-    assert pending(restricted) == []
-    assert restricted.http.get(f"/interventions/{challenge['id']}").status_code == 404
-    assert answer(restricted, challenge["id"], otp(tracking_number)).status_code == 404
+    # Organization users, the one who asked included, are refused.
+    for org_user in (user, other_org):
+        listing = org_user.http.get("/interventions")
+        assert listing.status_code == 403
+        assert listing.json()["error"]["code"] == "admins_only"
+        assert org_user.http.get(f"/interventions/{challenge['id']}").status_code == 403
+        assert answer(stack, challenge["id"], otp(tracking_number), by=org_user).status_code == 403
     assert httpx.get(f"{stack.base_url}/v1/interventions").status_code == 401
-    assert user.job(request_id)["status"] == OTP, "the refused attempt changed nothing"
+    assert user.job(request_id)["status"] == OTP, "the refused attempts changed nothing"
 
-    # Any other user is a staff member: the challenge is in their queue and they answer it.
-    assert challenge["id"] in [item["id"] for item in pending(colleague)]
-    assert answer(colleague, challenge["id"], otp(tracking_number)).status_code == 202
+    # Any admin sees both organizations' challenges in one queue and answers them.
+    colleague = stack.new_user(organization=None)
+    assert {challenge["id"], second["id"]} <= {item["id"] for item in pending(stack)}
+    assert answer(stack, challenge["id"], otp(tracking_number), by=colleague).status_code == 202
+    assert answer(stack, second["id"], otp(theirs)).status_code == 202
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
+    assert other_org.wait_for(other_request)["latest_job"]["status"] == "COMPLETED"
 
 
 def test_only_the_worker_of_the_jobs_adapter_can_fetch_an_answer(stack: Stack, user: User) -> None:
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     job = user.job(request_id)
     body = {
         "intervention_id": challenge["id"],
@@ -311,22 +314,22 @@ def test_only_the_worker_of_the_jobs_adapter_can_fetch_an_answer(stack: Stack, u
         "the internal API is not part of the public listener"
     )
 
-    assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
+    assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 202
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
 
 
-def test_the_human_interface_lets_a_user_sign_in_and_answer(stack: Stack, user: User) -> None:
+def test_the_human_interface_lets_an_admin_sign_in_and_answer(stack: Stack, user: User) -> None:
     stack.start_interface()
     tracking_number = number("CAPTCHA", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
 
     with httpx.Client(base_url=stack.interface_url, follow_redirects=True, timeout=15) as browser:
         assert "Sign in" in browser.get("/").text
         assert browser.post("/login", data={"api_key": "ctk_not_a_real_key"}).status_code == 401
-        listing = browser.post("/login", data={"api_key": user.api_key})
+        listing = browser.post("/login", data={"api_key": stack.answerer().api_key})
         assert f'href="/interventions/{challenge["id"]}"' in listing.text
-        assert user.api_key not in "".join(f"{c.name}={c.value}" for c in browser.cookies.jar)
+        assert stack.answerer().api_key not in "".join(f"{c.name}={c.value}" for c in browser.cookies.jar)
 
         page = browser.get(f"/interventions/{challenge['id']}")
         assert 'src="data:image/png;base64,' in page.text
@@ -340,7 +343,7 @@ def test_the_human_interface_lets_a_user_sign_in_and_answer(stack: Stack, user: 
         assert "Your answer was sent" in sent.text
 
     assert user.wait_for(request_id)["latest_job"]["status"] == "COMPLETED"
-    assert user.api_key not in stack.log_files()["human-interface.log"]
+    assert stack.answerer().api_key not in stack.log_files()["human-interface.log"]
 
 
 # ----------------------------------------------------------------------------- review corrections
@@ -350,7 +353,7 @@ def test_the_answer_is_handed_out_only_for_the_session_of_its_challenge(stack: S
     """Even the right worker, for the right job and attempt, gets nothing for another session."""
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     job = user.job(request_id)
     url = f"{stack.internal_url}/internal/v1/interventions/resolve"
     worker = {"Authorization": f"Bearer {stack.demosite_token}"}
@@ -361,7 +364,7 @@ def test_the_answer_is_handed_out_only_for_the_session_of_its_challenge(stack: S
     stack.stop_worker("demosite")  # so the test, not the worker, is the one asking
     stack.set_provider("demosite", queue_wait_max_ms=120_000)  # the resume may wait for the restart
     try:
-        assert answer(user, challenge["id"], code).status_code == 202
+        assert answer(stack, challenge["id"], code).status_code == 202
 
         other = "01a2111d-b3a8-7cc2-a6b1-c5e86fea3eba"
         denied = httpx.post(url, json={**body, "session_ref": other}, headers=worker)
@@ -389,13 +392,13 @@ def test_copies_of_a_resume_message_submit_the_answer_to_the_site_once(stack: St
     queue by hand: one races the original, one arrives after everything is over."""
     tracking_number = number("OTP", "DEMO")
     request_id = user.submit(tracking_number, "demosite")
-    challenge = challenge_for(user, request_id)
+    challenge = challenge_for(stack, tracking_number)
     job_id = user.job(request_id)["id"]
 
     stack.stop_worker("demosite")  # let the copies queue up behind the original
     stack.set_provider("demosite", queue_wait_max_ms=120_000)
     try:
-        assert answer(user, challenge["id"], otp(tracking_number)).status_code == 202
+        assert answer(stack, challenge["id"], otp(tracking_number)).status_code == 202
         (resume,) = wait_until(
             lambda: stack.query(
                 "SELECT payload::text AS body FROM outbox_messages "

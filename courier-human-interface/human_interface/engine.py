@@ -12,6 +12,10 @@ class NotSignedIn(Exception):
     """The Engine did not accept the API key."""
 
 
+class NotAnAdmin(NotSignedIn):
+    """The key belongs to an organization user: only admins answer verification requests."""
+
+
 class EngineUnavailable(Exception):
     """The Engine could not be reached or failed."""
 
@@ -38,6 +42,8 @@ class EngineClient:
             raise EngineUnavailable(type(error).__name__) from None
         if response.status_code == 401:
             raise NotSignedIn
+        if response.status_code == 403:
+            raise NotAnAdmin
         if response.status_code >= 500:
             raise EngineUnavailable(f"HTTP {response.status_code}")
         return response

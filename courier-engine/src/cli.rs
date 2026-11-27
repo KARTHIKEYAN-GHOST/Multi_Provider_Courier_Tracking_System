@@ -39,26 +39,42 @@ enum Command {
     Serve,
     /// Apply database migrations
     Migrate,
-    /// Manage users and API keys
+    /// Manage organizations, users, API keys and the platform
     #[command(subcommand)]
     Admin(AdminCommand),
 }
 
 #[derive(Subcommand)]
 enum AdminCommand {
-    /// Create a user and print their first API key (shown once)
+    /// Create an organization (prints its id; an existing one with that name is kept)
+    CreateOrganization {
+        #[arg(long)]
+        name: String,
+    },
+    /// Create a user and print their first API key (shown once). Give either the
+    /// organization the user belongs to, or --admin for an admin of the platform.
+    #[command(group(clap::ArgGroup::new("membership").required(true).args(["organization", "admin"])))]
     CreateUser {
         #[arg(long)]
         email: String,
+        /// The organization's name (create it first with create-organization)
+        #[arg(long)]
+        organization: Option<String>,
+        /// An admin: answers every organization's one-time codes and CAPTCHAs
+        #[arg(long)]
+        admin: bool,
     },
-    /// Make a user a staff member, who sees and answers every open challenge (one-time codes,
-    /// CAPTCHAs), or take that away again
-    SetStaff {
+    /// Change a user's role: --role admin, or --role org-user with --organization
+    SetRole {
         #[arg(long)]
         email: String,
-        #[arg(long, action = clap::ArgAction::Set)]
-        staff: bool,
+        #[arg(long, value_parser = ["admin", "org-user"])]
+        role: String,
+        #[arg(long, required_if_eq("role", "org-user"))]
+        organization: Option<String>,
     },
+    /// List users with their role and organization
+    ListUsers,
     /// Create an additional API key for an existing user (shown once)
     CreateApiKey {
         #[arg(long)]
@@ -372,13 +388,47 @@ fn normalize_email(raw: &str) -> anyhow::Result<String> {
     Ok(email)
 }
 
+/// An admin when no organization is named, otherwise a user of that existing organization.
+async fn membership(
+    pool: &PgPool,
+    organization: Option<&str>,
+) -> anyhow::Result<db::api_keys::Membership> {
+    let Some(name) = organization else {
+        return Ok(db::api_keys::Membership::Admin);
+    };
+    match db::api_keys::find_organization_id(pool, name.trim()).await? {
+        Some(id) => Ok(db::api_keys::Membership::Organization(id)),
+        None => bail!(
+            "no organization named {name:?} (create it with: admin create-organization --name ...)"
+        ),
+    }
+}
+
 /// Admin commands print results to stdout. The API key is printed exactly once and is
 /// never written to the log.
 async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow::Result<()> {
     match command {
-        AdminCommand::CreateUser { email } => {
+        AdminCommand::CreateOrganization { name } => {
+            let name = name.trim();
+            if name.is_empty() || name.chars().count() > 200 {
+                bail!("the name must have 1 to 200 characters");
+            }
+            if let Some(id) = db::api_keys::find_organization_id(pool, name).await? {
+                println!("organization_id: {id}");
+                println!("An organization with this name already exists; it was kept.");
+            } else {
+                let id = db::api_keys::create_organization(pool, name).await?;
+                println!("organization_id: {id}");
+            }
+        }
+        AdminCommand::CreateUser {
+            email,
+            organization,
+            admin: _,
+        } => {
             let email = normalize_email(&email)?;
-            let user_id = match db::api_keys::create_user(pool, &email).await {
+            let membership = membership(pool, organization.as_deref()).await?;
+            let user_id = match db::api_keys::create_user(pool, &email, membership).await {
                 Ok(id) => id,
                 Err(e) if db::is_unique_violation(&e) => {
                     bail!("a user with this email already exists")
@@ -390,20 +440,34 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
             println!("api_key: {key}");
             println!("Store this key now. It cannot be shown again.");
         }
-        AdminCommand::SetStaff { email, staff } => {
+        AdminCommand::SetRole {
+            email,
+            role,
+            organization,
+        } => {
             let email = normalize_email(&email)?;
-            let changed = sqlx::query(
-                "UPDATE users SET is_staff = $2, updated_at = now() WHERE lower(email) = lower($1)",
-            )
-            .bind(&email)
-            .bind(staff)
-            .execute(pool)
-            .await?
-            .rows_affected();
-            if changed == 0 {
+            let organization = if role == "admin" { None } else { organization };
+            let membership = membership(pool, organization.as_deref()).await?;
+            if !db::api_keys::set_membership(pool, &email, membership).await? {
                 bail!("no user with this email");
             }
-            println!("{email}: staff = {staff}");
+            println!(
+                "{email}: {role}{}",
+                organization.map(|o| format!(" of {o}")).unwrap_or_default()
+            );
+        }
+        AdminCommand::ListUsers => {
+            let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+                "SELECT u.email, u.role::text, o.name, u.status::text
+                 FROM users u LEFT JOIN organizations o ON o.id = u.organization_id
+                 ORDER BY o.name NULLS FIRST, u.email",
+            )
+            .fetch_all(pool)
+            .await?;
+            for (email, role, organization, status) in rows {
+                let organization = organization.unwrap_or_else(|| "-".into());
+                println!("{email:40} {role:9} {organization:30} {status}");
+            }
         }
         AdminCommand::CreateApiKey { email, name } => {
             let email = normalize_email(&email)?;

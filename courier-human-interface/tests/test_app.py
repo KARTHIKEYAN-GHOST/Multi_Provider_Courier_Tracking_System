@@ -16,6 +16,7 @@ from human_interface.config import Settings
 from human_interface.signins import SignIns
 
 KEY_A, KEY_B = "ctk_aaaaaaaaaaaa_" + "a" * 64, "ctk_bbbbbbbbbbbb_" + "b" * 64
+KEY_ORG = "ctk_cccccccccccc_" + "c" * 64
 OTP_ID = "01a2111d-b3a8-7cc2-a6b1-c5e86fea3eba"
 CAPTCHA_ID = "01a2111d-b3a8-7cc2-a6b1-c5e86fea3ebb"
 PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
@@ -31,7 +32,6 @@ def challenge(intervention_id: str, kind: str, **extra: Any) -> dict[str, Any]:
         "has_image": kind == "captcha",
         "expires_at": "2026-11-25T10:00:00Z",
         "created_at": "2026-11-25T09:50:00Z",
-        "tracking_request_id": "01a2111d-b3a8-7cc2-a6b1-c5e86fea3e00",
         "provider_code": "demosite",
         "tracking_number": "DEMO-OTP-1",
         "image": {"content_type": "image/png", "data": PNG} if kind == "captcha" else None,
@@ -40,7 +40,8 @@ def challenge(intervention_id: str, kind: str, **extra: Any) -> dict[str, Any]:
 
 
 class FakeEngine:
-    """User A has two open challenges; user B has none. Any other key is unknown."""
+    """Admin A sees two open challenges; admin B sees none (another moment of the queue).
+    KEY_ORG belongs to an organization user, whom the Engine refuses. Other keys are unknown."""
 
     def __init__(self) -> None:
         self.items = {OTP_ID: challenge(OTP_ID, "otp"), CAPTCHA_ID: challenge(CAPTCHA_ID, "captcha")}
@@ -48,6 +49,7 @@ class FakeEngine:
         self.answer_status = 202
         self.down = False
         self.revoked = False
+        self.demoted = False
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -55,6 +57,8 @@ class FakeEngine:
         if self.down:
             raise httpx.ConnectError("refused")
         key = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if key == KEY_ORG or (self.demoted and key == KEY_A):
+            return httpx.Response(403, json={"error": {"code": "admins_only"}})
         if self.revoked or key not in (KEY_A, KEY_B):
             return httpx.Response(401, json={"error": {"code": "unauthorized"}})
         mine = self.items if key == KEY_A else {}
@@ -226,6 +230,20 @@ def test_a_revoked_key_signs_the_user_out(site: TestClient, engine: FakeEngine) 
     sign_in(site)
     engine.revoked = True
     assert site.get("/interventions").headers["location"] == "/login?notice=bad_key"
+    assert site.get("/interventions").headers["location"] == "/login"
+
+
+def test_an_organization_user_is_told_that_only_admins_answer(site: TestClient) -> None:
+    response = site.post("/login", data={"api_key": KEY_ORG})
+    assert response.status_code == 403
+    assert "Only admins answer verification requests." in response.text
+    assert COOKIE not in response.cookies
+
+
+def test_an_admin_who_loses_the_role_is_signed_out(site: TestClient, engine: FakeEngine) -> None:
+    sign_in(site)
+    engine.demoted = True
+    assert site.get("/interventions").headers["location"] == "/login?notice=admins_only"
     assert site.get("/interventions").headers["location"] == "/login"
 
 

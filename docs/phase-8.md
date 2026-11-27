@@ -64,10 +64,9 @@ Points that matter:
 
 ### Who is asked
 
-> **Changed in Phase 10.** Every user is a staff member and sees and may answer every open
-> challenge; a user can be restricted to their own with `admin set-staff --staff false`
-> ([phase-10.md](phase-10.md)). What follows describes whom a challenge is assigned to,
-> which is what a restricted user sees.
+> **Changed in Phase 10, and again in Phase 11.** A challenge is no longer assigned to one
+> user. Since Phase 11 only admins see and answer challenges, all organizations' in one
+> queue ([phase-11.md](phase-11.md)). What follows is how it worked in Phase 8.
 
 The challenge is assigned to exactly one user: the one who started the lookup (first request or
 manual refresh) if they are still subscribed; for an automatic poll, the shipment's
