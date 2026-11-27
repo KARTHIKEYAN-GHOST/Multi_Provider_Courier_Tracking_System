@@ -361,6 +361,26 @@ services:
       engine:
         condition: service_healthy
 
+  # Demo Secure Logistics (adapter written by the AI repair service). Started only on request.
+  adapter-demosecure:
+    profiles: ["couriers", "demosecure"]
+    build: *worker-build
+    image: courier-adapter-worker:local
+    command: ["-m", "adapters.demosecure"]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file:
+      - path: ./worker-tokens/demosecure.env
+        required: false
+    environment:
+      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
+      WORKER_CONCURRENCY: ${DEMOSECURE_WORKER_CONCURRENCY:-2}
+      WORKER_ENGINE_INTERNAL_URL: http://engine:8081
+      LOG_FORMAT: json
+    depends_on:
+      engine:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   rabbitmq-data:
