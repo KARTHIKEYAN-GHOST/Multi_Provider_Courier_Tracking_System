@@ -32,6 +32,7 @@ import httpx
 
 from courier_adapter_sdk import (
     Adapter,
+    AuthInvalid,
     JobContext,
     RawResponse,
     SchemaDrift,
@@ -49,7 +50,7 @@ _NUMBER = re.compile(r"^[A-Za-z0-9-]{3,40}$")
 
 class DemoSecureAdapter(Adapter):
     key: ClassVar[str] = "demosecure"
-    version: ClassVar[str] = "0.1.0"
+    version: ClassVar[str] = "0.1.1"
 
     def __init__(
         self, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None
@@ -78,7 +79,10 @@ class DemoSecureAdapter(Adapter):
         if not signed_in.is_redirect:
             check_status(signed_in)
             if is_login_page(signed_in.text):
-                raise SchemaDrift("the site answered the sign-in with the sign-in form again")
+                # The site refused the stored login: a wrong or changed password, not a
+                # changed site. (Kept as evidence: it shows the site's own message.)
+                ctx.keep_evidence(signed_in)
+                raise AuthInvalid("the site refused the stored login")
 
         response = await client.get(
             f"{self.base_url}/secure/track", params={"number": request.tracking_number}

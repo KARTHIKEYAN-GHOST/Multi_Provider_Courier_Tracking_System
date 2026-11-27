@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import urllib.parse
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,7 +13,8 @@ import pytest
 
 from adapters.demosecure import DemoSecureAdapter
 from adapters.demosecure.parser import form_token, is_login_page, parse_tracking_page
-from courier_adapter_sdk import SchemaDrift, ShipmentNotFound
+from courier_adapter_sdk import AuthInvalid, SchemaDrift, ShipmentNotFound
+from demo_site.server import make_server
 
 from .adapter_support import run_track
 
@@ -157,11 +160,36 @@ async def test_a_number_that_cannot_be_a_consignment_is_not_sent() -> None:
     assert seen == []
 
 
-async def test_a_refused_sign_in_is_schema_drift() -> None:
-    transport, _ = site(page("result_page"), sign_in_html=LOGIN_FORM)
+async def test_a_refused_sign_in_is_auth_invalid() -> None:
+    # A wrong password is not a changed site: SCHEMA_DRIFT would send a working adapter to be
+    # repaired (found in the live test, where the adapter said SCHEMA_DRIFT here).
+    transport, seen = site(page("result_page"), sign_in_html=LOGIN_FORM)
     adapter = DemoSecureAdapter(base_url="http://127.0.0.1:18090", transport=transport)
-    with pytest.raises(SchemaDrift):
+    with pytest.raises(AuthInvalid):
         await run_track(adapter, "DEMO-OK-1", SECRET)
+    assert all(r.url.path != "/secure/track" for r in seen), "no lookup without a session"
+
+
+@pytest.fixture
+def demo_site(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """The real demo site, with an account whose password is SECRET's."""
+    monkeypatch.setenv("DEMO_SITE_SECURE_EMAIL", SECRET["email"])
+    monkeypatch.setenv("DEMO_SITE_SECURE_PASSWORD", SECRET["password"])
+    server = make_server("127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+async def test_against_the_real_site_the_right_login_reads_and_a_wrong_one_is_auth_invalid(
+    demo_site: str,
+) -> None:
+    adapter = DemoSecureAdapter(base_url=demo_site)
+    result = await run_track(adapter, "DEMO-TRANSIT-1", SECRET)
+    assert len(result.events) == 3
+    with pytest.raises(AuthInvalid):
+        await run_track(adapter, "DEMO-TRANSIT-1", {**SECRET, "password": "a-wrong-one"})
 
 
 async def test_a_tracking_request_answered_with_the_sign_in_form_is_schema_drift() -> None:
