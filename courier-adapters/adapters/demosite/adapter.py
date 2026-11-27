@@ -40,7 +40,7 @@ VERIFICATION_LIFETIME_S = 600
 
 class DemoSiteAdapter(Adapter):
     key: ClassVar[str] = "demosite"
-    version: ClassVar[str] = "0.2.0"
+    version: ClassVar[str] = "0.2.1"
 
     def __init__(
         self, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None
