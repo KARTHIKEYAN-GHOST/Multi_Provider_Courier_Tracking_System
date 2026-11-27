@@ -348,6 +348,7 @@ struct WaitingJob {
     adapter_id: Uuid,
     correlation_id: Uuid,
     tracking_number: String,
+    shipment_id: Uuid,
 }
 
 #[derive(sqlx::FromRow)]
@@ -384,7 +385,8 @@ pub async fn submit(
 
     // Job first, then the challenge: the order the event handlers use.
     let job = sqlx::query_as::<_, WaitingJob>(
-        "SELECT j.status::text AS status, j.attempt, j.adapter_id, j.correlation_id, s.tracking_number
+        "SELECT j.status::text AS status, j.attempt, j.adapter_id, j.correlation_id, s.tracking_number,
+                j.shipment_id
          FROM tracking_jobs j JOIN shipments s ON s.id = j.shipment_id
          WHERE j.id = $1 FOR UPDATE OF j",
     )
@@ -450,6 +452,7 @@ pub async fn submit(
     let target = db::providers::dispatch_target_by_adapter(&mut tx, job.adapter_id)
         .await?
         .ok_or(sqlx::Error::RowNotFound)?;
+    let target = db::providers::scoped(&mut tx, target, job.shipment_id).await?;
     let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(&mut *tx)
         .await?;

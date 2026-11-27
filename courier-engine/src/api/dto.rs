@@ -60,6 +60,9 @@ impl From<JobRow> for JobView {
 pub struct TrackingRequestView {
     pub id: Uuid,
     pub provider_code: String,
+    /// `live`; `building` while the courier's adapter is being written (the lookup starts by
+    /// itself once it is ready); `failed` when no adapter could be built.
+    pub provider_status: String,
     pub tracking_number: String,
     pub reference: Option<String>,
     /// Normalized shipment status — where the parcel is.
@@ -111,6 +114,7 @@ impl From<RequestRow> for TrackingRequestView {
         TrackingRequestView {
             id: r.id,
             provider_code: r.provider_code,
+            provider_status: r.provider_status,
             tracking_number: r.tracking_number,
             reference: r.reference,
             shipment_status: r.shipment_status,

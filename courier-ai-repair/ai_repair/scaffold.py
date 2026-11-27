@@ -53,6 +53,7 @@ class ProviderSpec:
     needs_credential: bool
     notes: str
     sample: str | None = None
+    tracking_url: str | None = None
 
     @classmethod
     def from_request(cls, request: dict[str, object]) -> ProviderSpec:
@@ -74,10 +75,20 @@ class ProviderSpec:
             name=name.strip(),
             method=method,
             hosts=hosts,
-            needs_credential=bool(request.get("needs_credential")) and method == "api",
+            # A website may need a login too (Phase 12): the worker then gets it from the Engine.
+            needs_credential=bool(request.get("needs_credential")) or bool(request.get("login")),
             notes=str(request.get("notes", ""))[:4000],
             sample=sample[:100_000] if isinstance(sample, str) and sample else None,
+            tracking_url=_tracking_url(request.get("tracking_url"), hosts),
         )
+
+
+def _tracking_url(value: object, hosts: tuple[str, ...]) -> str | None:
+    """The tracking address, if it is an http(s) address on one of the approved hosts."""
+    if not isinstance(value, str) or len(value) > 500 or any(c in value for c in "\n\r\t "):
+        return None
+    match = re.match(r"https?://([^/?#:@]+)", value)
+    return value if match and match.group(1).lower() in hosts else None
 
 
 def _insert_before(text: str, anchor: str, block: str, path: str) -> str:
@@ -132,27 +143,37 @@ def _migration(spec: ProviderSpec) -> str:
         if spec.method == "scrape"
         else "an operator has checked it"
     )
-    rows = ",\n".join(
-        f"    ('{uuid.uuid4()}', '{provider_id}', '{raw}', '{normalized}')" for raw, normalized in _MAPPINGS
-    )
+    rows = ",\n".join(f"    ('{uuid.uuid4()}', '{raw}', '{normalized}')" for raw, normalized in _MAPPINGS)
     return f"""-- Provider '{spec.code}' ({spec.name}), added by the AI repair service on request.
 -- Generated from a template; the adapter code itself is in courier-adapters/adapters/{spec.code}/.
--- The provider cannot be used until {gate}.
+-- On a database where somebody added the courier already (Phase 12: status 'building'), its
+-- row is kept as it is (with its login and recorded permission) and only the adapter is
+-- added; elsewhere the row is created here. Either way the courier is live afterwards.
+-- Elsewhere the provider cannot be used until {gate}.
 INSERT INTO providers (id, code, name, tracking_method, timeout_ms, queue_wait_max_ms, result_grace_ms,
                        max_attempts, retry_base_ms, retry_max_ms, requires_credential,
                        min_dispatch_interval_ms)
 VALUES ('{provider_id}', '{spec.code}', '{spec.name}', '{spec.method}',
-        20000, 900000, 30000, 3, 5000, 300000, {"true" if spec.needs_credential else "false"}, 2000);
+        20000, 900000, 30000, 3, 5000, 300000, {"true" if spec.needs_credential else "false"}, 2000)
+ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO adapters (id, provider_id, key, method, queue_name)
-VALUES ('{adapter_id}', '{provider_id}',
-        '{spec.code}', '{spec.method}', 'adapter.{spec.code}.jobs');
+SELECT '{adapter_id}', id, '{spec.code}', '{spec.method}', 'adapter.{spec.code}.jobs'
+  FROM providers WHERE code = '{spec.code}'
+ON CONFLICT (key) DO NOTHING;
 
 -- The status codes of courier-adapters/adapters/india.py. Wording the adapter does not
 -- recognize arrives unchanged and appears in the list of unmapped statuses.
 INSERT INTO provider_status_mappings (id, provider_id, raw_status, normalized_status)
-VALUES
-{rows};
+SELECT m.id::uuid, p.id, m.raw_status, m.normalized_status::shipment_status
+  FROM providers p, (VALUES
+{rows}
+  ) AS m (id, raw_status, normalized_status)
+ WHERE p.code = '{spec.code}'
+ON CONFLICT (provider_id, raw_status) DO NOTHING;
+
+UPDATE providers SET status = 'live', build_failure = NULL, updated_at = now()
+ WHERE code = '{spec.code}';
 """
 
 
@@ -165,10 +186,9 @@ def _compose(text: str, spec: ProviderSpec) -> str:
         f"      WORKER_CONCURRENCY: ${{{spec.code.upper()}_WORKER_CONCURRENCY:-2}}",
     ]
     if spec.needs_credential:
-        lines += [
-            "      WORKER_ENGINE_INTERNAL_URL: http://engine:8081",
-            f"      WORKER_TOKEN: ${{{spec.code.upper()}_WORKER_TOKEN:-}}",
-        ]
+        # The worker's token comes from infrastructure/worker-tokens/<code>.env, which
+        # `make worker-tokens` writes (the automatic update runs it); it is never in Git.
+        lines.append("      WORKER_ENGINE_INTERNAL_URL: http://engine:8081")
     lines.append("      LOG_FORMAT: json")
     block = (
         f"""
@@ -180,7 +200,16 @@ def _compose(text: str, spec: ProviderSpec) -> str:
     command: ["-m", "adapters.{spec.code}"]
     restart: unless-stopped
     stop_grace_period: 40s
-    environment:
+"""
+        + (
+            f"""    env_file:
+      - path: ./worker-tokens/{spec.code}.env
+        required: false
+"""
+            if spec.needs_credential
+            else ""
+        )
+        + """    environment:
 """
         + "\n".join(lines)
         + """

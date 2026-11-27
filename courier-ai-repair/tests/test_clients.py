@@ -62,6 +62,17 @@ def test_no_task_a_refusal_and_an_outage() -> None:
         EngineClient("http://e", TOKEN, transport=httpx.MockTransport(refuse)).claim()
 
 
+def test_the_login_of_a_task_is_fetched_by_the_task_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/v1/repairs/t1/login":
+            return httpx.Response(200, json={"login": {"email": "a@b.example", "password": "pw", "x": [1]}})
+        return httpx.Response(204)
+
+    engine = EngineClient("http://e", TOKEN, transport=httpx.MockTransport(handler))
+    assert engine.login("t1") == {"email": "a@b.example", "password": "pw"}
+    assert engine.login("t2") is None
+
+
 def test_the_model_is_asked_through_openrouter_and_nothing_about_the_installation_is_sent() -> None:
     seen: list[httpx.Request] = []
 
@@ -207,8 +218,11 @@ def test_a_task_in_work_is_handed_back_when_the_service_is_stopped() -> None:
         def failed(self, task_id: str, reason: str) -> None:
             self.reported.append((task_id, reason))
 
+        def login(self, task_id: str) -> None:
+            return None
+
     class Stopped:
-        def process(self, task: Task) -> None:
+        def process(self, task: Task, *, login: object = None) -> None:
             raise KeyboardInterrupt
 
     engine = Engine()

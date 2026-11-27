@@ -192,6 +192,8 @@ class Stack:
         self.site_url = f"http://127.0.0.1:{self.site_port}"
         # A master key that exists only for this run.
         self.master_key = secrets.token_hex(32)
+        #: The token the AI repair service uses on the internal API (only this run's).
+        self.repair_token = secrets.token_hex(32)
         engine_env = {
             **os.environ,
             "DATABASE_URL": self.database_url,
@@ -200,6 +202,7 @@ class Stack:
             "ENGINE_TOPOLOGY_PREFIX": self.prefix,
             "ENGINE_INTERNAL_ADDR": f"127.0.0.1:{self.internal_port}",
             "CREDENTIAL_MASTER_KEY": self.master_key,
+            "ENGINE_REPAIR_TOKEN": self.repair_token,
             "ENABLE_DUMMY_PROVIDER": "true",
             "LOG_FORMAT": "json",
             "OUTBOX_POLL_MS": "50",

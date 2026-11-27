@@ -87,6 +87,18 @@ class EngineClient:
             samples=samples,
         )
 
+    def login(self, task_id: str) -> dict[str, str] | None:
+        """The courier's login for a task being worked on, or ``None``. Kept only in memory."""
+        response = self._post(f"/internal/v1/repairs/{task_id}/login")
+        if response.status_code in (204, 404):
+            return None
+        if response.status_code != 200:
+            raise EngineUnavailable(f"unexpected answer to a login request (HTTP {response.status_code})")
+        login = response.json().get("login")
+        if not isinstance(login, dict):
+            return None
+        return {str(k): str(v) for k, v in login.items() if isinstance(v, (str, int))}
+
     def published(self, task_id: str, commit_sha: str, summary: str) -> None:
         self._finish(task_id, {"status": "published", "commit_sha": commit_sha, "summary": summary})
 

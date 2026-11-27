@@ -21,6 +21,7 @@ struct DueJob {
     tracking_number: String,
     adapter_id: Uuid,
     queue_wait_max_ms: i32,
+    shipment_id: Uuid,
 }
 
 /// Opens the next attempt for up to `limit` due jobs. Returns how many it opened.
@@ -29,7 +30,7 @@ pub async fn open_due_attempts(pool: &PgPool, limit: i64) -> Result<usize, sqlx:
     // SKIP LOCKED lets several scheduler instances run without ever picking the same job.
     let due = sqlx::query_as::<_, DueJob>(
         "SELECT j.id, j.attempt, j.correlation_id, s.tracking_number,
-                j.adapter_id, p.queue_wait_max_ms
+                j.adapter_id, p.queue_wait_max_ms, j.shipment_id
          FROM tracking_jobs j
          JOIN shipments s ON s.id = j.shipment_id
          JOIN providers p ON p.id = s.provider_id
@@ -69,6 +70,7 @@ pub async fn open_due_attempts(pool: &PgPool, limit: i64) -> Result<usize, sqlx:
         let target = providers::dispatch_target_by_adapter(&mut tx, job.adapter_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
+        let target = providers::scoped(&mut tx, target, job.shipment_id).await?;
         enqueue_job_track(
             &mut tx,
             &target,

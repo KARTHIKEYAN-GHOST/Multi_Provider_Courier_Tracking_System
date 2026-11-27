@@ -54,6 +54,15 @@ impl From<DispatchError> for ApiError {
                 message: "the adapter for this provider is being repaired; the lookup starts by \
                           itself when the repair has ended",
             },
+            DispatchError::AdapterBeingBuilt => ApiError::Conflict {
+                code: "adapter_being_built",
+                message: "the adapter for this courier is being built; the lookup starts by \
+                          itself when it is ready",
+            },
+            DispatchError::AdapterBuildFailed => ApiError::Conflict {
+                code: "adapter_build_failed",
+                message: "no adapter could be built for this courier; an admin can try again",
+            },
             DispatchError::Database(e) => e.into(),
         }
     }
@@ -100,6 +109,7 @@ pub async fn create(
         &state.pool,
         &NewTrackingRequest {
             user_id: caller.user_id,
+            organization_id: caller.organization_id,
             provider_code: &body.provider_code,
             tracking_number: &body.tracking_number,
             reference,

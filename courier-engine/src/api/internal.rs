@@ -29,10 +29,11 @@ use crate::{
 };
 
 pub fn router(state: AppState) -> Router {
-    // The AI repair service has its own token and reaches these two routes only.
+    // The AI repair service has its own token and reaches these routes only.
     let repair = Router::new()
         .route("/internal/v1/repairs/claim", post(claim_repair))
         .route("/internal/v1/repairs/{id}/result", post(finish_repair))
+        .route("/internal/v1/repairs/{id}/login", post(repair_login))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_repair_token,
@@ -210,6 +211,32 @@ async fn claim_repair(State(state): State<AppState>) -> Result<Response, ApiErro
 }
 
 /// POST /internal/v1/repairs/{id}/result
+/// The login for a running task's courier, for the agent's requests (Phase 12). 204 when
+/// there is none. Never cached.
+async fn repair_login(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let Some(store) = state.secrets.as_deref() else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    match credentials::login_for_repair(&state.pool, store, id).await {
+        Ok(Some(login)) => {
+            let mut response = Json(json!({ "login": login })).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            Ok(response)
+        }
+        Ok(None) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(credentials::CredentialError::Database(e)) => Err(e.into()),
+        Err(error) => {
+            tracing::error!(%error, repair_task_id = %id, "the login for a repair cannot be read");
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+    }
+}
+
 async fn finish_repair(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,

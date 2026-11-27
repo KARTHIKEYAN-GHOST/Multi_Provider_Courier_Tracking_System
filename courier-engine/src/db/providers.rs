@@ -10,11 +10,13 @@ pub struct ProviderView {
     pub code: String,
     pub name: String,
     pub tracking_method: TrackingMethod,
+    /// building, live or failed (Phase 12).
+    pub status: String,
 }
 
 pub async fn list_enabled(pool: &PgPool) -> Result<Vec<ProviderView>, sqlx::Error> {
     sqlx::query_as::<_, ProviderView>(
-        "SELECT code, name, tracking_method FROM providers WHERE enabled ORDER BY code",
+        "SELECT code, name, tracking_method, status FROM providers WHERE enabled ORDER BY code",
     )
     .fetch_all(pool)
     .await
@@ -36,7 +38,8 @@ pub struct DispatchTarget {
     pub requires_credential: bool,
     /// Minimum time between two dispatches to this provider; 0 means no limit.
     pub min_dispatch_interval_ms: i32,
-    /// The provider's credential in use, if one is stored.
+    /// The credential this lookup uses: the platform's own login (no organization) as read,
+    /// or, after [`scoped`], the login of the organization the shipment belongs to.
     pub credential_id: Option<Uuid>,
     /// A repair of the adapter is waiting or under way. Its lookups would fail one by one,
     /// so no new lookup is started until the repair has ended (see `REPAIR_PAUSE_HOURS`).
@@ -54,6 +57,85 @@ impl DispatchTarget {
         }
         None
     }
+}
+
+/// The access scope of a lookup made by a user of `organization`: `org:<id>` when the
+/// organization has its own login for the provider, otherwise `public` (shared by everyone,
+/// with the platform's login if the provider needs one).
+pub async fn scope_for(
+    conn: &mut PgConnection,
+    provider_id: Uuid,
+    organization: Option<Uuid>,
+) -> Result<String, sqlx::Error> {
+    let Some(organization) = organization else {
+        return Ok("public".into());
+    };
+    let own: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM provider_credentials
+                         WHERE provider_id = $1 AND organization_id = $2 AND revoked_at IS NULL)",
+    )
+    .bind(provider_id)
+    .bind(organization)
+    .fetch_one(conn)
+    .await?;
+    Ok(if own {
+        format!("org:{organization}")
+    } else {
+        "public".into()
+    })
+}
+
+/// The organization an access scope belongs to (`org:<id>`), if any.
+pub fn scope_organization(scope: &str) -> Option<Uuid> {
+    scope
+        .strip_prefix("org:")
+        .and_then(|id| Uuid::parse_str(id).ok())
+}
+
+/// Points the target at the login of the shipment's organization when the shipment's lookups
+/// are made with that organization's own login. Without one in use, the target has no
+/// credential, so a provider that needs one is blocked rather than using someone else's.
+pub async fn scoped(
+    conn: &mut PgConnection,
+    mut target: DispatchTarget,
+    shipment_id: Uuid,
+) -> Result<DispatchTarget, sqlx::Error> {
+    let scope: String = sqlx::query_scalar("SELECT access_scope FROM shipments WHERE id = $1")
+        .bind(shipment_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    if let Some(organization) = scope_organization(&scope) {
+        target.credential_id = sqlx::query_scalar(
+            "SELECT id FROM provider_credentials
+              WHERE provider_id = $1 AND organization_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(target.provider_id)
+        .bind(organization)
+        .fetch_optional(conn)
+        .await?;
+    }
+    Ok(target)
+}
+
+/// A provider by code without its adapter: whether it exists, and where it stands.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ProviderState {
+    pub id: Uuid,
+    pub status: String,
+    pub enabled: bool,
+    pub build_failure: Option<String>,
+}
+
+pub async fn state_by_code(
+    conn: &mut PgConnection,
+    code: &str,
+) -> Result<Option<ProviderState>, sqlx::Error> {
+    sqlx::query_as::<_, ProviderState>(
+        "SELECT id, status, enabled, build_failure FROM providers WHERE code = $1",
+    )
+    .bind(code)
+    .fetch_optional(conn)
+    .await
 }
 
 /// A repair pauses its provider for at most this long. A task nobody works on (the repair
@@ -74,7 +156,8 @@ macro_rules! dispatch_target_select {
                           AND t.created_at > clock_timestamp() - interval '6 hours') AS under_repair
          FROM providers p
          JOIN adapters a ON a.provider_id = p.id
-         LEFT JOIN provider_credentials c ON c.provider_id = p.id AND c.revoked_at IS NULL"
+         LEFT JOIN provider_credentials c ON c.provider_id = p.id AND c.revoked_at IS NULL
+                                           AND c.organization_id IS NULL"
     };
 }
 

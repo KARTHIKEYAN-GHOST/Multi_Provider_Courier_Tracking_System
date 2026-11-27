@@ -29,7 +29,10 @@ def run_once(engine: EngineClient, repairer: Repairer) -> bool:
     if task is None:
         return False
     try:
-        done = repairer.process(task)
+        # The courier's login, if one is stored: the agent may log in with it, through
+        # placeholders; it is never shown to the model, written to Git or logged.
+        login = engine.login(task.id)
+        done = repairer.process(task, login=login)
     except KeyboardInterrupt:
         # Stopped by hand or by the container: hand the task back, so that the adapter's
         # lookups are not held back for a task nobody works on.

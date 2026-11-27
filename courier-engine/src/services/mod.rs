@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod events;
 pub mod interventions;
 pub mod mappings;
+pub mod onboarding;
 pub mod polling;
 pub mod reaper;
 pub mod repairs;

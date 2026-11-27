@@ -8,7 +8,7 @@ SHELL := /bin/bash
 DOCKER  ?= docker
 COMPOSE := $(DOCKER) compose --env-file .env -f infrastructure/docker-compose.yml -p courier
 
-.PHONY: check-ai check-ai-push help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai seed-test-data
+.PHONY: check-ai check-ai-push help env setup compose-config up-deps verify-deps down destroy ps logs migrate run-engine update-contract-fixtures test-contracts test-engine test-adapters run-worker test up up-dhl up-couriers smoke test-e2e master-key run-demo-site maintenance unmapped session-key test-human-interface run-human-interface test-ai-repair run-ai-repair repair-token repairs auto-update up-ai seed-test-data worker-tokens deploy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -148,6 +148,14 @@ test-e2e: env ## End-to-end: real Engine + worker processes on a private databas
 	cd tests-e2e && uv run ruff format --check . && uv run ruff check . && uv run pytest
 
 test: test-contracts test-engine test-adapters test-human-interface test-ai-repair test-e2e ## Run every test suite
+
+worker-tokens: env ## Give the workers of AI-written adapters their tokens (in infrastructure/worker-tokens/, never printed)
+	COMPOSE="$(COMPOSE)" infrastructure/worker-tokens.sh
+
+deploy: env ## Put everything into service: the stack, tokens for new workers, and every courier's worker (what the automatic update runs)
+	$(MAKE) up
+	$(MAKE) worker-tokens
+	$(COMPOSE) --profile couriers up -d --build
 
 auto-update: ## Follow GitHub: pull new commits (e.g. adapters pushed by the AI), check them and redeploy; runs until Ctrl+C
 	infrastructure/auto-update.sh

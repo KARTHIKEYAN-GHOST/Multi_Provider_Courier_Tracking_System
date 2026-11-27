@@ -140,6 +140,7 @@ pub async fn count(pool: &PgPool, table: &'static str) -> i64 {
         "tracking_jobs" => "SELECT count(*) FROM tracking_jobs",
         "job_attempts" => "SELECT count(*) FROM job_attempts",
         "outbox_messages" => "SELECT count(*) FROM outbox_messages",
+        "repair_tasks" => "SELECT count(*) FROM repair_tasks",
         other => panic!("unknown table {other}"),
     };
     sqlx::query_scalar::<_, i64>(sql)

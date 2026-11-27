@@ -9,8 +9,10 @@ decided afterwards by ``verify`` (the guard and the sandboxed checks), not by th
 from __future__ import annotations
 
 import ast
+import html
 import json
 import re
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,6 +30,12 @@ _FIXTURE_NAME = re.compile(r"[a-z0-9][a-z0-9_]{0,39}")
 _MAX_FIXTURES, _MAX_FIXTURE_CHARS, _MAX_FILE_CHARS = 5, 400_000, 60_000
 _READABLE = ("courier-adapters/adapters/", "courier-adapters/tests/", "courier-adapters/courier_adapter_sdk/")
 _SENT_HEADERS = frozenset({"accept", "content-type", "x-requested-with", "referer", "origin"})
+#: Sent only when the value is made from the stored login's placeholders, never with a key
+#: the agent found somewhere (for example in a page's script).
+_LOGIN_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
+_PLACEHOLDER = re.compile(r"\{\{login\.([A-Za-z0-9_]{1,40})\}\}")
+#: Values shorter than this are not hidden in answers: they would blot out ordinary text.
+_MIN_HIDDEN = 4
 
 DESCRIPTION = """\
 open_page    {"url": "..."}                      open an approved address in the browser
@@ -46,6 +54,14 @@ read_file    {"path": "..."}                      a file under courier-adapters/
 write_file   {"path": "...", "content": "..."}    create or replace one of the adapter's files (whole file)
 run_checks   {}                                   code rules, ruff, mypy and the adapter's tests
 finish       {"summary": "<one sentence>"}        hand the work in; it is accepted only if the checks pass"""
+
+LOGIN_NOTE = """\
+A login for this courier is stored, and you may use it to log in while you work: write
+{{{{login.<field>}}}} wherever the value belongs: in an http url, header, form or json value, in
+open_page, or in the text of type. Fields: {fields}. You never see the values: they are filled
+in when the request is sent, and shown as the placeholder in everything you read back. In the
+adapter's code, read the login with `secret = await ctx.credentials()` (secret["<field>"]); in
+tests and fixtures use made-up values."""
 
 
 class Files(Protocol):
@@ -71,9 +87,13 @@ class Toolbox:
         *,
         browser: Browser | None = None,
         transport: httpx.BaseTransport | None = None,
+        login: dict[str, str] | None = None,
     ) -> None:
         self._files, self._key, self._net, self._verify = files, key, net, verify
         self._browser = browser
+        #: The courier's login, filled into placeholders. Never part of what the model reads.
+        self._login = {str(k): str(v) for k, v in (login or {}).items() if isinstance(v, (str, int))}
+        self._hidden = self._variants()
         self._http = httpx.Client(timeout=30.0, follow_redirects=False, transport=transport, trust_env=False)
         self._last_http: tuple[str, str] | None = None  # content type, body
         #: Fixtures saved by the agent: file name -> path. They are part of the work.
@@ -95,10 +115,62 @@ class Toolbox:
         try:
             result = handler(action)
         except (NetRefused, BrowserUnavailable) as error:
-            return f"Refused: {error}", False
+            return self.hide(f"Refused: {error}"), False
+        except BadAction as error:
+            raise BadAction(self.hide(str(error))) from None
         if action.name == "finish":
             return result, result == ""
-        return result, False
+        return self.hide(result), False
+
+    # ------------------------------------------------------------------ the login
+
+    @property
+    def login_fields(self) -> list[str]:
+        return sorted(self._login)
+
+    def _variants(self) -> list[tuple[str, str]]:
+        """Each login value as it may appear in an answer, longest first, with its placeholder."""
+        found: dict[str, str] = {}
+        for name, value in self._login.items():
+            if len(value) < _MIN_HIDDEN:
+                continue
+            shown = f"{{{{login.{name}}}}}"
+            for form in (
+                value,
+                urllib.parse.quote(value, safe=""),
+                urllib.parse.quote_plus(value),
+                html.escape(value),
+                json.dumps(value)[1:-1],
+            ):
+                found.setdefault(form, shown)
+        return sorted(found.items(), key=lambda item: -len(item[0]))
+
+    def hide(self, text: str) -> str:
+        """``text`` with every login value replaced by its placeholder."""
+        for value, shown in self._hidden:
+            text = text.replace(value, shown)
+        return text
+
+    def _fill(self, text: str) -> str:
+        """``text`` with each placeholder replaced by the login value."""
+
+        def value(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name not in self._login:
+                known = ", ".join(self.login_fields) or "none: no login is stored for this courier"
+                raise BadAction(f"there is no login field {name!r} (fields: {known})")
+            return self._login[name]
+
+        return _PLACEHOLDER.sub(value, text)
+
+    def _fill_any(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._fill(value)
+        if isinstance(value, dict):
+            return {str(k): self._fill_any(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._fill_any(v) for v in value]
+        return value
 
     # ------------------------------------------------------------------ browser
 
@@ -108,7 +180,7 @@ class Toolbox:
         return self._browser
 
     def _do_open_page(self, action: Action) -> str:
-        return untrusted("the page", self._need_browser().open(action.text("url")))
+        return untrusted("the page", self._need_browser().open(self._fill(action.text("url"))))
 
     def _do_click(self, action: Action) -> str:
         return untrusted(
@@ -116,7 +188,7 @@ class Toolbox:
         )
 
     def _do_type(self, action: Action) -> str:
-        text = action.text("text", default="", limit=200)
+        text = self._fill(action.text("text", default="", limit=200))
         return self._need_browser().type(action.text("selector", limit=300), text)
 
     def _do_select(self, action: Action) -> str:
@@ -138,15 +210,17 @@ class Toolbox:
         method = action.text("method", default="GET", limit=10).upper()
         if method not in ("GET", "POST"):
             raise BadAction("the http action supports GET and POST")
-        url = action.text("url")
-        form, body, headers = action.args.get("form"), action.args.get("json"), action.args.get("headers")
+        url = self._fill(action.text("url"))
+        form, body, headers = (action.args.get(k) for k in ("form", "json", "headers"))
         if form is not None and not isinstance(form, dict):
             raise BadAction('"form" must be an object of field names and values')
         sent = {
-            str(name): str(value)[:500]
+            str(name): self._fill(str(value)[:500])
             for name, value in (headers.items() if isinstance(headers, dict) else [])
             if str(name).lower() in _SENT_HEADERS
+            or (str(name).lower() in _LOGIN_HEADERS and _PLACEHOLDER.search(str(value)))
         }
+        form, body = self._fill_any(form), self._fill_any(body)
         self._net.spend(url)
         try:
             response = self._http.request(
@@ -185,6 +259,8 @@ class Toolbox:
             raise BadAction('"source" is "page" or "http"')
         if len(body) > _MAX_FIXTURE_CHARS:
             raise BadAction("the answer is too large to keep as a fixture")
+        # A fixture goes into Git: the login never does.
+        body = self.hide(body)
         try:
             parsed: Any = json.loads(body) if "json" in kind else None
         except ValueError:

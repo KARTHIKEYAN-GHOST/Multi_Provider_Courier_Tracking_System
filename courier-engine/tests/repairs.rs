@@ -105,6 +105,8 @@ fn spec() -> NewProvider {
         needs_credential: true,
         notes: "GET /track?awb=<number> returns JSON with a scans list".into(),
         sample: Some("{\"scans\": []}".into()),
+        tracking_url: None,
+        login: false,
     }
 }
 
@@ -498,4 +500,145 @@ async fn a_task_for_a_new_provider_or_another_adapter_pauses_nothing(pool: PgPoo
     let reply = track(&app(&pool), &key, "DUMMY-OK-1").await;
     assert_eq!(reply.status, 201);
     assert_ne!(reply.body["latest_job"], Value::Null);
+}
+
+// ----------------------------------------------------------------------------- Phase 12 triggers
+
+/// A result of another outcome, with an answer.
+async fn report(pool: &PgPool, job_id: Uuid, outcome: &str, class: Option<&str>) {
+    let mut payload = json!({
+        "job_id": job_id, "attempt": 1, "execution_id": Uuid::now_v7(), "delivery_count": 0,
+        "worker_id": "dummy-test", "adapter_key": "dummy", "adapter_version": "0.1.0",
+        "started_at": "2026-11-24T10:00:00.100Z", "finished_at": "2026-11-24T10:00:00.300Z",
+        "outcome": outcome,
+        "raw_response": { "content_type": "text/html", "body": PAGE },
+    });
+    if let Some(class) = class {
+        payload["error"] = json!({ "class": class, "message": "login page says no", "retryable": false, "retry_after_ms": null });
+    }
+    if outcome == "SUCCESS" {
+        payload["events"] = json!([{ "raw_status": "PKG_OUT_FOR_DELIVERY", "raw_description": "On the way",
+                                     "occurred_at": "2026-11-24T09:00:00Z" }]);
+        payload["metrics"] = json!({ "duration_ms": 200 });
+    }
+    let body = json!({
+        "message_id": Uuid::now_v7(), "type": "job.result", "schema_version": "1.0",
+        "occurred_at": "2026-11-24T10:00:00Z", "correlation_id": Uuid::now_v7(), "causation_id": null,
+        "producer": "adapter-dummy@0.1.0", "payload": payload,
+    })
+    .to_string();
+    handle_event(pool, body.as_bytes(), POLICY).await.unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn not_found_for_shipments_found_before_opens_a_repair(pool: PgPool) {
+    // Never found: an unknown number is the user's mistake, not the adapter's.
+    for i in 0..3 {
+        let job = new_job(&pool, &format!("DUMMY-NEW-{i}")).await;
+        report(&pool, job, "NOT_FOUND", None).await;
+    }
+    assert_eq!(samples(&pool).await, 0);
+
+    // Found once, then "not found": the adapter probably misreads the courier now.
+    for i in 0..3 {
+        let number = format!("DUMMY-SEEN-{i}");
+        let job = new_job(&pool, &number).await;
+        report(&pool, job, "SUCCESS", None).await;
+        sqlx::query(
+            "UPDATE shipments SET current_status = 'IN_TRANSIT' WHERE tracking_number = $1",
+        )
+        .bind(&number)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM tracking_events e JOIN shipments s ON s.id = e.shipment_id WHERE s.tracking_number = $1",
+        )
+        .bind(&number)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(events, 1, "the first lookup found it");
+        let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let key = courier_engine::services::api_keys::issue(&pool, user_id, None)
+            .await
+            .unwrap();
+        let request: Uuid = sqlx::query_scalar(
+            "SELECT r.id FROM tracking_requests r JOIN shipments s ON s.id = r.shipment_id WHERE s.tracking_number = $1",
+        )
+        .bind(&number)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let refreshed = call(
+            &app(&pool),
+            Method::POST,
+            &format!("/v1/tracking-requests/{request}/refresh"),
+            Some(&key),
+            None,
+        )
+        .await;
+        let job = Uuid::parse_str(refreshed.body["job"]["id"].as_str().unwrap_or_else(|| {
+            refreshed.body["latest_job"]["id"]
+                .as_str()
+                .expect("a new job")
+        }))
+        .unwrap();
+        report(&pool, job, "NOT_FOUND", None).await;
+    }
+    assert_eq!(samples(&pool).await, 3);
+    let opened = tasks(&pool).await;
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        (opened[0].0.as_str(), opened[0].1.as_str()),
+        ("repair", "dummy")
+    );
+    let class: String =
+        sqlx::query_scalar("SELECT DISTINCT error_class FROM adapter_failure_samples")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(class, "NOT_FOUND");
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_login_refused_after_it_worked_opens_a_repair_but_a_wrong_login_does_not(pool: PgPool) {
+    // The dummy courier is told to need a login for this test.
+    sqlx::query("UPDATE providers SET requires_credential = true WHERE code = 'dummy'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = courier_engine::services::credentials::PgSecretStore::new(
+        courier_engine::services::crypto::MasterKey::from_hex(&"5a".repeat(32), 1).unwrap(),
+    );
+    courier_engine::services::credentials::set_credential(
+        &pool,
+        &store,
+        "dummy",
+        "t",
+        json!({ "password": "pw" }).as_object().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // Refused from the start: the login is wrong; repairing the adapter would not help.
+    for i in 0..3 {
+        let job = new_job(&pool, &format!("DUMMY-AUTH-{i}")).await;
+        report(&pool, job, "FAILURE", Some("AUTH_INVALID")).await;
+    }
+    assert_eq!(samples(&pool).await, 0);
+
+    // It worked once ...
+    let job = new_job(&pool, "DUMMY-AUTH-OK").await;
+    report(&pool, job, "SUCCESS", None).await;
+    // ... and is refused now for three shipments: the site's login has changed.
+    for i in 0..3 {
+        let job = new_job(&pool, &format!("DUMMY-AUTH-LATER-{i}")).await;
+        report(&pool, job, "FAILURE", Some("AUTH_INVALID")).await;
+    }
+    assert_eq!(samples(&pool).await, 3);
+    assert_eq!(tasks(&pool).await.len(), 1);
 }

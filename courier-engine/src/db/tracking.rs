@@ -28,10 +28,11 @@ pub async fn upsert_active_shipment(
     conn: &mut PgConnection,
     provider_id: Uuid,
     tracking_number: &str,
+    access_scope: &str,
 ) -> Result<ShipmentRef, sqlx::Error> {
     sqlx::query_as::<_, ShipmentRef>(
         "INSERT INTO shipments (id, provider_id, tracking_number, access_scope)
-         VALUES ($1, $2, $3, 'public')
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (provider_id, tracking_number, access_scope) WHERE archived_at IS NULL
          DO UPDATE SET updated_at = now()
          RETURNING id, current_status",
@@ -39,6 +40,7 @@ pub async fn upsert_active_shipment(
     .bind(Uuid::now_v7())
     .bind(provider_id)
     .bind(tracking_number)
+    .bind(access_scope)
     .fetch_one(conn)
     .await
 }
@@ -208,6 +210,7 @@ pub async fn cancel_request(
 pub struct RequestRow {
     pub id: Uuid,
     pub provider_code: String,
+    pub provider_status: String,
     pub tracking_number: String,
     pub reference: Option<String>,
     pub shipment_status: ShipmentStatus,
@@ -229,7 +232,7 @@ pub struct RequestRow {
 
 macro_rules! request_select {
     () => {
-        "SELECT r.id, p.code AS provider_code, s.tracking_number, r.reference,
+        "SELECT r.id, p.code AS provider_code, p.status AS provider_status, s.tracking_number, r.reference,
                 s.current_status AS shipment_status, s.last_event_at, s.next_poll_at, s.archived_at,
                 r.created_at,
                 j.id AS job_id, j.status AS job_status, j.attempt AS job_attempt,

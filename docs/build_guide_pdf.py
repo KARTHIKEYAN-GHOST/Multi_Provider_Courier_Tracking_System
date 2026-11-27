@@ -718,9 +718,53 @@ M("migration 0019_remove_skyking.sql", "SkyKing was to be removed from the syste
   "Deletes its provider, adapter, mappings, tokens and open repair tasks; a database that already holds SkyKing shipments keeps the rows switched off instead, so no history is lost.")
 
 # ---------------------------------------------------------------- 18
-H1("18. Current state, open points and what comes next")
+H1("18. Phase 12: couriers without an adapter; the AI builds it by itself")
+P("Anyone signed in adds a courier; the Engine asks the AI for its adapter without any admin step; requests wait and start by themselves when the adapter is live. Full details and the step-by-step test are in docs/phase-12.md.")
+H2("The flow")
+C("""
+user/admin --POST /v1/providers--> provider "building" (+ login, encrypted)
+        Engine scheduler: a building courier without a task --> new_provider task
+user --POST /v1/tracking-requests--> accepted, waits (provider_status: building)
+AI repair service: claims the task, fetches the login (only while running, audited),
+        the agent logs in with {{login.email}} / {{login.password}}, checks, pushes to main
+automatic update: pull, check, make deploy (migrate, worker token, start the worker)
+provider "live" --> the waiting lookups start; the worker logs in with the stored login
+""")
+T(["Status", "New request", "Refresh"], [
+  ["building", "201, waits", "409 adapter_being_built"],
+  ["live", "as always", "as always"],
+  ["failed (3 tries)", "409 adapter_build_failed", "409 adapter_build_failed; admin retry-provider"]], [40, 60, 66])
+H2("The login and the AI")
+B("The repair service gets the login only for a task that is running; every hand-out is audited without the value.",
+  "The agent writes placeholders such as {{login.password}}; they are filled only when a request is sent. Every value (also URL-encoded, HTML- or JSON-escaped) is replaced by its placeholder in everything the model reads back and in fixtures.",
+  "An Authorization or API-key header is sent only when made from the login's placeholders, never with a key found on a page.",
+  "The login never enters the sandbox, Git, the task, the logs or the model. One-time codes and CAPTCHAs are still answered only by an admin.")
+H2("Per-organization logins")
+P("An organization may store its own login for a courier. Its users' lookups use it and are shared only inside the organization (access_scope org:<id>); everyone else uses the platform's login. The worker always gets the login of the job's shipment.")
+H2("More automatic repairs, automatic deploy")
+B("Besides unreadable answers, a repair opens when a login that worked is now refused (AUTH_INVALID), or when shipments found before are now NOT_FOUND; three different shipments in 24 hours.",
+  "make auto-update now runs make deploy: make up (migrations), make worker-tokens (a token per new worker, in infrastructure/worker-tokens/, never printed or committed), and every courier's worker.",
+  "The adapter's migration keeps a courier that was added at run time (its login and recorded permission) and only adds the adapter; on a fresh database it creates the row.")
+H2("Important functions")
+M("services/onboarding.rs: add_courier", "Anyone signed in must be able to add a courier, safely.",
+  "Checks name, method, tracking address (its host becomes the only approved host; IP addresses and internal names are refused), extra hosts, notes and the owner's permission for a website; derives the code; limits an organization to five a day (serialized with a row lock); inserts the courier in building with who added it and who recorded the permission; stores the login encrypted for the organization; asks for the adapter at once.")
+M("services/onboarding.rs: open_build_tasks", "No admin should be needed to start building an adapter, also for rows put straight into the database.",
+  "Runs on every pass of the polling scheduler: marks couriers with an adapter live; for each building courier without an open task opens a new_provider task (the unique index on open tasks keeps two Engines from opening two); after a failed try it waits 10 minutes; after three it marks the courier failed with the last reason.")
+M("services/dispatch.rs: subscribe_waiting, polling.rs: defer_for_build", "Requests for a courier being built must be accepted and start by themselves later.",
+  "The request is stored with its shipment but no job; the shipment is looked at again every 60 seconds; once the adapter exists the scheduler creates the job as for any poll.")
+M("db/providers.rs: scope_for, scoped", "An organization's own login must be used for its lookups only.",
+  "A lookup by a user whose organization has its own login gets the shipment scope org:<id>; at every dispatch (new request, refresh, poll, retry, resume) the target's credential is set from the shipment's scope, so another organization's login is never used.")
+M("services/credentials.rs: login_for_repair", "The agent works better when it can log in, but must never see the login.",
+  "Hands the login to the repair service only for a running task, prefers the platform's login, then the adding organization's; writes an audit row; the HTTP answer is not cached.")
+M("agent/tools.py: Toolbox.hide, _fill", "The values must reach the website but never the model or Git.",
+  "_fill replaces {{login.<field>}} in URLs, headers, form and JSON values and typed text; hide replaces each value, in five spellings, longest first, in every result, refusal and error, and in fixtures before they are written.")
+M("services/repairs.rs: record_failure", "A changed login page or a site that no longer finds known shipments is also a broken adapter.",
+  "Records AUTH_INVALID only if a lookup with the same login succeeded after it was stored, and NOT_FOUND only for shipments that have events; counts different shipments, not jobs.")
+
+# ---------------------------------------------------------------- 19
+H1("19. Current state, open points and what comes next")
 H2("Verified")
-B("951 automated tests pass: 99 contract, 195 Engine, 426 adapter, 31 human-interface, 143 AI repair service, 57 end-to-end (SkyKing's 24 adapter tests left with it).",
+B("974 automated tests pass: 99 contract, 210 Engine, 426 adapter, 31 human-interface, 149 AI repair service, 59 end-to-end.",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
@@ -730,6 +774,8 @@ B("The Docker images and the full container stack (make up, make smoke) had not 
   "The AI repair service has written one adapter (The Professional Couriers) with a free model and pushed it to GitHub; that adapter has never read a real result page.",
   "The agent of Phase 10 is tested with a stand-in model that answers from a script and with the real browser against the demo site. It has not yet completed a task with a real model; the Claude suppliers of Phase 11 are tested with stand-ins only.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
+  "No real courier has been added and built end to end with Phase 12: the end-to-end test plays the AI repair service on the internal API and applies the scaffold's migration; the agent's login placeholders are tested with a stand-in model.",
+  "make deploy and make worker-tokens have been run only with a stand-in for Docker (worker-tokens needs Docker Compose 2.24 or newer).",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
 B("The dummy courier is created by migration 0008 in every database. Since Phase 6 the ENABLE_DUMMY_PROVIDER setting can switch it off.",
@@ -744,8 +790,9 @@ T(["Phase", "Deliverable"], [
   ["9 (done)", "AI repair service: repairs a broken adapter or writes one for a new courier, checks it in a sandbox and pushes it to GitHub"],
   ["10 (done)", "The agent: browser, HTTP client and code environment for the AI, with any model; staff answer CAPTCHAs and one-time codes; a courier is paused during its repair; container for the agent"],
   ["11 (done)", "Organizations with two roles (organization user, admin); test data straight into the database; Claude in the agent (setup token or API key); SkyKing removed"],
-  ["12", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
-  ["13", "Production images and deployment documentation"]], [16, 150])
+  ["12 (done)", "Anyone adds a courier; the AI builds its adapter by itself, may log in with the stored login through placeholders; requests wait; automatic deploy; per-organization logins; more repair triggers"],
+  ["13", "Metrics, circuit breaker, dead-letter tooling, chaos tests"],
+  ["14", "Production images and deployment documentation"]], [16, 150])
 H2("Glossary")
 T(["Term", "Meaning"], [
   ["Adapter", "Python class that talks to one courier."], ["Worker", "A process running one adapter for many jobs at once."],

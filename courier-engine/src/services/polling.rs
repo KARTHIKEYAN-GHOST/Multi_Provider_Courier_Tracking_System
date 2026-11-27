@@ -66,6 +66,25 @@ pub async fn defer_for_repair(
     Ok(())
 }
 
+/// How long a lookup for a courier whose adapter is being built waits before the scheduler
+/// looks again. Short: the adapter goes live when its migration is applied, at any moment.
+const BUILD_RECHECK_SECONDS: i32 = 60;
+
+/// Holds a shipment's lookup back until its courier's adapter is live.
+pub async fn defer_for_build(
+    conn: &mut PgConnection,
+    shipment_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE shipments SET next_poll_at = clock_timestamp() + $2 * interval '1 second' WHERE id = $1",
+    )
+    .bind(shipment_id)
+    .bind(BUILD_RECHECK_SECONDS)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Like `schedule_next_poll`, but leaves an already scheduled lookup where it is.
 pub async fn schedule_next_poll_if_unset(
     conn: &mut PgConnection,
@@ -107,6 +126,7 @@ struct Due {
     current_status: ShipmentStatus,
     has_subscriber: bool,
     gave_up: bool,
+    provider_status: String,
 }
 
 /// Starts a lookup for up to `limit` shipments whose next lookup is due.
@@ -121,7 +141,8 @@ pub async fn poll_due(pool: &PgPool, limit: i64) -> Result<PollStats, sqlx::Erro
                 EXISTS (SELECT 1 FROM tracking_requests r
                         WHERE r.shipment_id = s.id AND r.status = 'active') AS has_subscriber,
                 COALESCE(s.last_change_at, s.created_at)
-                    < clock_timestamp() - p.poll_give_up_days * interval '1 day' AS gave_up
+                    < clock_timestamp() - p.poll_give_up_days * interval '1 day' AS gave_up,
+                p.status AS provider_status
          FROM shipments s
          JOIN providers p ON p.id = s.provider_id
          WHERE s.next_poll_at <= clock_timestamp() AND s.archived_at IS NULL
@@ -145,6 +166,16 @@ pub async fn poll_due(pool: &PgPool, limit: i64) -> Result<PollStats, sqlx::Erro
             continue;
         }
         let target = db::providers::dispatch_target_by_id(&mut tx, shipment.provider_id).await?;
+        if target.is_none() && shipment.provider_status == "building" {
+            // The adapter is still being built: look again shortly.
+            defer_for_build(&mut tx, shipment.id).await?;
+            stats.postponed += 1;
+            continue;
+        }
+        let target = match target {
+            Some(target) => Some(db::providers::scoped(&mut tx, target, shipment.id).await?),
+            None => None,
+        };
         if target
             .as_ref()
             .is_some_and(|t| t.blocked_reason().is_none() && t.under_repair)

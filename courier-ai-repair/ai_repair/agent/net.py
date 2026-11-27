@@ -9,8 +9,10 @@ every local service (the Engine's internal API, the database, the broker).
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import re
+import socket
 import time
 from urllib.parse import urlsplit
 
@@ -38,6 +40,21 @@ def _local(host: str) -> bool:
     return not address.is_global
 
 
+@functools.lru_cache(maxsize=256)
+def _resolves_local(host: str) -> bool:
+    """Whether a host name points into this machine or a private network (a public-looking
+    name can). A name that does not resolve is not refused here: the request fails anyway."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return False
+    return any(not ipaddress.ip_address(str(info[4][0]).split("%")[0]).is_global for info in infos)
+
+
+def _inside(host: str) -> bool:
+    return _local(host) or _resolves_local(host)
+
+
 class Net:
     def __init__(
         self,
@@ -62,7 +79,7 @@ class Net:
             return False
         if host not in self.hosts:
             return False
-        return not _local(host) or (host, port) in self._origins
+        return not _inside(host) or (host, port) in self._origins
 
     def static_allowed(self, url: str, kind: str) -> bool:
         """May a page load this part? Approved hosts, and static parts from public hosts."""
@@ -73,7 +90,7 @@ class Net:
         except ValueError:
             return False
         host = (parts.hostname or "").lower()
-        return kind in STATIC_KINDS and parts.scheme == "https" and bool(host) and not _local(host)
+        return kind in STATIC_KINDS and parts.scheme == "https" and bool(host) and not _inside(host)
 
     def spend(self, url: str) -> None:
         """Counts one request of the agent and keeps a polite distance to the last one."""

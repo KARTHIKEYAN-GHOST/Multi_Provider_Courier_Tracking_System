@@ -26,6 +26,7 @@ from . import guard, prompts
 from .agent import Agent, AgentGaveUp, Net, Toolbox
 from .agent.browser import Browser
 from .agent.net import origins_in
+from .agent.tools import LOGIN_NOTE
 from .config import Settings
 from .engine import Task
 from .guard import ADAPTERS, TESTS, ProposedFile, Rejected
@@ -135,11 +136,15 @@ class Repairer:
         hosts: set[str],
         before: dict[str, str],
         fixtures: list[str],
+        login: dict[str, str] | None = None,
+        origins: set[tuple[str, int | None]] | None = None,
     ) -> tuple[str, list[str]]:
         """The agent works in steps until its work passes the checks. Summary and written paths."""
         settings = self._settings
         code = "\n".join(text for path, text in before.items() if path.startswith(ADAPTERS))
-        net = Net(hosts, origins_in(code), max_requests=settings.ai_repair_agent_max_requests)
+        net = Net(
+            hosts, origins_in(code) | (origins or set()), max_requests=settings.ai_repair_agent_max_requests
+        )
         accepted: list[str] = []
 
         def verify(saved: list[str]) -> str | None:
@@ -163,12 +168,13 @@ class Repairer:
             return failed
 
         browser = Browser(net) if settings.ai_repair_agent_browser else None
-        tools = Toolbox(ws, key, net, verify, browser=browser)
+        tools = Toolbox(ws, key, net, verify, browser=browser, login=login)
         agent = Agent(self._model, prompts.AGENT_SYSTEM, max_steps=settings.ai_repair_agent_max_steps)
+        task_text = prompts.agent_task(first_message, hosts, browser=browser is not None)
+        if tools.login_fields:
+            task_text += "\n\n" + LOGIN_NOTE.format(fields=", ".join(tools.login_fields))
         try:
-            summary = agent.run(
-                prompts.agent_task(first_message, hosts, browser=browser is not None), tools, label=key
-            )
+            summary = agent.run(tools.hide(task_text), tools, label=key)
         except AgentGaveUp as error:
             raise TaskFailed(str(error)) from None
         finally:
@@ -179,7 +185,9 @@ class Repairer:
 
     # ------------------------------------------------------------------ the two kinds of task
 
-    def _repair(self, ws: Workspace, task: Task) -> tuple[str, list[str], str]:
+    def _repair(
+        self, ws: Workspace, task: Task, login: dict[str, str] | None = None
+    ) -> tuple[str, list[str], str]:
         key = task.adapter_key
         before = _adapter_files(ws, key)
         if f"{ADAPTERS}/{key}/adapter.py" not in before:
@@ -207,11 +215,13 @@ class Repairer:
             if f"adapters.{key}" in content and f"{TESTS}/{file.name}" not in before:
                 context[f"{TESTS}/{file.name}"] = content
         message = prompts.repair(key, before, context, failures, hosts)
-        summary, paths = self._agent_until_accepted(ws, key, message, hosts, before, fixture_names)
+        summary, paths = self._agent_until_accepted(ws, key, message, hosts, before, fixture_names, login)
         version = guard.adapter_version(ws.read(f"{ADAPTERS}/{key}/adapter.py") or "") or "?"
         return summary, [*paths, *fixture_paths], f"AI repair: {key} adapter {version}"
 
-    def _new_provider(self, ws: Workspace, task: Task) -> tuple[str, list[str], str]:
+    def _new_provider(
+        self, ws: Workspace, task: Task, login: dict[str, str] | None = None
+    ) -> tuple[str, list[str], str]:
         try:
             spec = ProviderSpec.from_request(task.request)
             if spec.code != task.adapter_key:
@@ -235,14 +245,21 @@ class Repairer:
         for path in _SHARED:
             reference[path] = ws.read(path) or ""
         message = prompts.new_provider(
-            key, spec.name, spec.method, spec.hosts, spec.needs_credential, spec.notes, sample, reference
+            key, spec.name, spec.method, spec.hosts, spec.needs_credential, spec.notes, sample, reference,
+            tracking_url=spec.tracking_url,
+        )  # fmt: skip
+        # The exact tracking address (host and port) is reachable even on this machine: the
+        # Engine accepts a local one only from its operator (a row in the database), never
+        # from a user of the API.
+        origins = origins_in(spec.tracking_url) if spec.tracking_url else set()
+        summary, paths = self._agent_until_accepted(
+            ws, key, message, set(spec.hosts), {}, fixture_names, login, origins
         )
-        summary, paths = self._agent_until_accepted(ws, key, message, set(spec.hosts), {}, fixture_names)
         return summary, [*paths, *fixture_paths, *scaffolded], f"AI: new adapter for {spec.name} ({key})"
 
     # ------------------------------------------------------------------ entry
 
-    def process(self, task: Task) -> Published:
+    def process(self, task: Task, *, login: dict[str, str] | None = None) -> Published:
         """Does one task. Raises ``TaskFailed`` (or a model / Git error) when it cannot be done."""
         if not guard.valid_key(task.adapter_key):
             raise TaskFailed("the task names an adapter key that is not valid")
@@ -259,9 +276,9 @@ class Repairer:
             base = ws.clone()
             log.info("task_started", task=task.id, kind=task.kind, adapter=task.adapter_key, base=base[:12])
             if task.kind == "repair":
-                summary, paths, title = self._repair(ws, task)
+                summary, paths, title = self._repair(ws, task, login)
             elif task.kind == "new_provider":
-                summary, paths, title = self._new_provider(ws, task)
+                summary, paths, title = self._new_provider(ws, task, login)
             else:
                 raise TaskFailed(f"unknown kind of task '{task.kind}'")
             message = (

@@ -14,14 +14,15 @@
 #   AUTO_UPDATE_CHECK       command that must succeed before deploying; empty = none
 #                           (default: make test-contracts test-adapters)
 #   AUTO_UPDATE_DEPLOY      command that puts the new code into service
-#                           (default: make up)
+#                           (default: make deploy: the stack, worker tokens for new adapters,
+#                           and every courier's worker, so an adapter the AI wrote starts by itself)
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
 BRANCH=${AUTO_UPDATE_BRANCH:-main}
 INTERVAL=${AUTO_UPDATE_INTERVAL_S:-120}
 CHECK=${AUTO_UPDATE_CHECK-make test-contracts test-adapters}
-DEPLOY=${AUTO_UPDATE_DEPLOY-make up}
+DEPLOY=${AUTO_UPDATE_DEPLOY-make deploy}
 
 PENDING="$(git rev-parse --git-dir)/courier-auto-update-pending"
 LOG="$(git rev-parse --git-dir)/courier-auto-update-check.log"

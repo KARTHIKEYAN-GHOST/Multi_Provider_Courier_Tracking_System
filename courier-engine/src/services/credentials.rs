@@ -37,12 +37,14 @@ pub enum CredentialError {
 /// Where secrets are kept. The Engine's own implementation is [`PgSecretStore`]; an external
 /// secrets manager (for example Vault) can replace it by implementing this trait.
 pub trait SecretStore: Send + Sync {
-    /// Stores a secret under the given credential ID.
+    /// Stores a secret under the given credential ID: an organization's own login when
+    /// `organization` is set, the platform's otherwise.
     fn put(
         &self,
         conn: &mut PgConnection,
         credential_id: Uuid,
         provider_id: Uuid,
+        organization: Option<Uuid>,
         label: &str,
         secret: &SecretFields,
     ) -> impl Future<Output = Result<(), CredentialError>> + Send;
@@ -93,6 +95,7 @@ impl SecretStore for PgSecretStore {
         conn: &mut PgConnection,
         credential_id: Uuid,
         provider_id: Uuid,
+        organization: Option<Uuid>,
         label: &str,
         secret: &SecretFields,
     ) -> Result<(), CredentialError> {
@@ -102,8 +105,9 @@ impl SecretStore for PgSecretStore {
             .seal(&plaintext, &binding(credential_id, provider_id));
         sqlx::query(
             "INSERT INTO provider_credentials
-                 (id, provider_id, label, key_version, wrapped_key, key_nonce, ciphertext, nonce)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 (id, provider_id, label, key_version, wrapped_key, key_nonce, ciphertext, nonce,
+                  organization_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(credential_id)
         .bind(provider_id)
@@ -113,6 +117,7 @@ impl SecretStore for PgSecretStore {
         .bind(sealed.key_nonce.as_slice())
         .bind(&sealed.ciphertext)
         .bind(sealed.nonce.as_slice())
+        .bind(organization)
         .execute(conn)
         .await?;
         Ok(())
@@ -234,13 +239,28 @@ pub async fn audit(conn: &mut PgConnection, entry: Audit<'_>) -> Result<(), sqlx
     Ok(())
 }
 
-/// Stores a provider's credential, replacing (revoking) the one in use. Returns the new ID.
+/// Stores the platform's credential for a provider (used by everyone without their own),
+/// replacing (revoking) the one in use. Returns the new ID.
 pub async fn set_credential(
     pool: &PgPool,
     store: &impl SecretStore,
     provider_code: &str,
     label: &str,
     secret: &SecretFields,
+) -> Result<Uuid, CredentialError> {
+    set_credential_for(pool, store, provider_code, label, secret, None, "admin").await
+}
+
+/// Stores a credential for a provider: an organization's own login (`organization` set), or
+/// the platform's. Replaces (revokes) the one of the same owner in use. Returns the new ID.
+pub async fn set_credential_for(
+    pool: &PgPool,
+    store: &impl SecretStore,
+    provider_code: &str,
+    label: &str,
+    secret: &SecretFields,
+    organization: Option<Uuid>,
+    actor_type: &str,
 ) -> Result<Uuid, CredentialError> {
     validate_secret(secret)?;
     let mut tx = pool.begin().await?;
@@ -252,24 +272,36 @@ pub async fn set_credential(
             .await?
             .ok_or(CredentialError::UnknownProvider)?;
     sqlx::query(
-        "UPDATE provider_credentials SET revoked_at = now() WHERE provider_id = $1 AND revoked_at IS NULL",
+        "UPDATE provider_credentials SET revoked_at = now()
+          WHERE provider_id = $1 AND revoked_at IS NULL AND organization_id IS NOT DISTINCT FROM $2",
     )
     .bind(provider_id)
+    .bind(organization)
     .execute(&mut *tx)
     .await?;
     let credential_id = Uuid::now_v7();
     store
-        .put(&mut tx, credential_id, provider_id, label, secret)
+        .put(
+            &mut tx,
+            credential_id,
+            provider_id,
+            organization,
+            label,
+            secret,
+        )
         .await?;
     audit(
         &mut tx,
         Audit {
-            actor_type: "admin",
+            actor_type,
             action: "credential.set",
             provider_id: Some(provider_id),
             credential_id: Some(credential_id),
             // Field names help an operator; values are never recorded.
-            details: Some(json!({ "label": label, "fields": secret.keys().collect::<Vec<_>>() })),
+            details: Some(
+                json!({ "label": label, "fields": secret.keys().collect::<Vec<_>>(),
+                                  "organization_id": organization }),
+            ),
             ..Audit::default()
         },
     )
@@ -291,7 +323,7 @@ pub async fn revoke_credential(
         .ok_or(CredentialError::UnknownProvider)?;
     let revoked = sqlx::query_scalar::<_, Uuid>(
         "UPDATE provider_credentials SET revoked_at = now()
-         WHERE provider_id = $1 AND revoked_at IS NULL RETURNING id",
+         WHERE provider_id = $1 AND revoked_at IS NULL AND organization_id IS NULL RETURNING id",
     )
     .bind(provider_id)
     .fetch_optional(&mut *tx)
@@ -311,6 +343,52 @@ pub async fn revoke_credential(
     }
     tx.commit().await?;
     Ok(revoked.is_some())
+}
+
+/// The login the AI repair service may use while it builds or repairs an adapter: only for a
+/// task that is running, and audited each time. The service fills it into the agent's
+/// requests and never shows it to the model (Phase 12). The platform's login is preferred,
+/// then the one of the organization that added the courier, then any organization's.
+/// `Ok(None)`: no running task with this ID, or no login stored for its courier.
+pub async fn login_for_repair(
+    pool: &PgPool,
+    store: &impl SecretStore,
+    task_id: Uuid,
+) -> Result<Option<SecretFields>, CredentialError> {
+    let mut conn = pool.acquire().await?;
+    let found: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT p.id, c.id
+           FROM repair_tasks t
+           JOIN providers p ON p.id = COALESCE((SELECT a.provider_id FROM adapters a WHERE a.key = t.adapter_key),
+                                               (SELECT q.id FROM providers q WHERE q.code = t.adapter_key))
+           JOIN provider_credentials c ON c.provider_id = p.id AND c.revoked_at IS NULL
+          WHERE t.id = $1 AND t.status = 'running'
+          ORDER BY (c.organization_id IS NULL) DESC,
+                   (c.organization_id IS NOT DISTINCT FROM p.added_by_organization) DESC,
+                   c.created_at DESC
+          LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((provider_id, credential_id)) = found else {
+        return Ok(None);
+    };
+    let secret = store.get(&mut conn, credential_id).await?;
+    audit(
+        &mut conn,
+        Audit {
+            actor_type: "ai_repair",
+            action: "credential.agent_use",
+            allowed: secret.is_some(),
+            provider_id: Some(provider_id),
+            credential_id: Some(credential_id),
+            details: Some(json!({ "repair_task_id": task_id })),
+            ..Audit::default()
+        },
+    )
+    .await?;
+    Ok(secret)
 }
 
 /// What an operator may see of a credential: everything except the secret.
@@ -355,6 +433,7 @@ struct JobForResolve {
     attempt: i32,
     adapter_id: Uuid,
     provider_id: Uuid,
+    access_scope: String,
 }
 
 /// Decides whether `worker` may have the secret for this job, and returns it if so.
@@ -375,7 +454,7 @@ pub async fn resolve(
 ) -> Result<Resolved, CredentialError> {
     let mut conn = pool.acquire().await?;
     let job = sqlx::query_as::<_, JobForResolve>(
-        "SELECT j.status::text AS status, j.attempt, j.adapter_id, s.provider_id
+        "SELECT j.status::text AS status, j.attempt, j.adapter_id, s.provider_id, s.access_scope
          FROM tracking_jobs j JOIN shipments s ON s.id = j.shipment_id
          WHERE j.id = $1",
     )
@@ -407,10 +486,13 @@ pub async fn resolve(
         if !reference_is_valid {
             break 'decide Err("reference_not_for_this_provider");
         }
+        // The login of the shipment's organization for its own lookups, the platform's otherwise.
         let active = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM provider_credentials WHERE provider_id = $1 AND revoked_at IS NULL",
+            "SELECT id FROM provider_credentials
+              WHERE provider_id = $1 AND revoked_at IS NULL AND organization_id IS NOT DISTINCT FROM $2",
         )
         .bind(job.provider_id)
+        .bind(crate::db::providers::scope_organization(&job.access_scope))
         .fetch_optional(&mut *conn)
         .await?;
         let Some(active) = active else {

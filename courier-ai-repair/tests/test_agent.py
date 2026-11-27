@@ -6,12 +6,14 @@ AI service. The browser is the real one, against the demo courier website starte
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -33,6 +35,23 @@ from .test_service import (
     ScriptedModel,
     repair_task,
 )
+
+
+@contextlib.contextmanager
+def patch_resolution(names: dict[str, str]) -> Iterator[None]:
+    """Name resolution answering from ``names``, for the duration of the block."""
+    from ai_repair.agent.net import _resolves_local
+
+    def fake(host: str, *args: object, **kwargs: object) -> list[tuple[Any, ...]]:
+        if host not in names:
+            raise socket.gaierror("unknown")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (names[host], 0))]
+
+    _resolves_local.cache_clear()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(socket, "getaddrinfo", fake)
+        yield
+    _resolves_local.cache_clear()
 
 
 def act(name: str, /, **arguments: object) -> str:
@@ -89,6 +108,12 @@ def test_the_agent_reaches_only_approved_addresses() -> None:
     assert not net.static_allowed("https://cdn.example.net/next", "document")
     assert not net.static_allowed("http://127.0.0.1:5672/x.js", "script")
     assert not net.static_allowed("http://169.254.169.254/latest/meta-data", "image")
+    # A public-looking name that points into this machine is refused like the address itself.
+    inward = Net({"sneaky.example", "localhost.example"}, pause_s=0)
+    with patch_resolution({"sneaky.example": "10.1.2.3", "localhost.example": "93.184.215.14"}):
+        assert not inward.allowed("https://sneaky.example/")
+        assert not inward.static_allowed("https://sneaky.example/x.js", "script")
+        assert inward.allowed("https://localhost.example/")
     assert origins_in('A = "http://127.0.0.1:8090"\nB = "https://x.example/api"') == {
         ("127.0.0.1", 8090),
         ("x.example", None),
@@ -394,3 +419,133 @@ def test_an_agent_looks_at_the_site_with_the_browser_and_tests_against_what_it_s
     assert "TRACKING0001" in saved
     assert "DEMO-OK-4711" not in saved, "the consignment number never reaches the repository"
     assert "0.2.1" in git(remote, "show", f"main:{adapter}")
+
+
+# ----------------------------------------------------------------------------- the courier's login
+
+EMAIL, PASSWORD = "ops@acme.example.com", "p@ss word&<Secret>/42"
+
+
+def login_toolbox(tmp_path: Path, handler: object, browser: object = None) -> Toolbox:
+    net = Net({"api.acme.example"}, pause_s=0)
+    return Toolbox(
+        Folder(tmp_path), "acme", net, lambda saved: None,
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+        browser=browser,  # type: ignore[arg-type]
+        login={"email": EMAIL, "password": PASSWORD},
+    )  # fmt: skip
+
+
+def test_the_login_is_filled_into_requests_and_never_shown_back(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # A careless site echoes everything it got, in every spelling.
+        echoed = request.content.decode() + " " + request.url.query.decode()
+        return httpx.Response(
+            200,
+            json={"you_sent": echoed, "user": EMAIL, "password": PASSWORD,
+                  "auth": request.headers.get("authorization", "")},
+        )  # fmt: skip
+
+    tools = login_toolbox(tmp_path, server)
+    assert tools.login_fields == ["email", "password"]
+    answer = run(
+        tools,
+        act("http", method="post", url="https://api.acme.example/login?u={{login.email}}",
+            form={"email": "{{login.email}}", "password": "{{login.password}}"},
+            headers={"Authorization": "Basic {{login.password}}"}),
+    )  # fmt: skip
+    # Sent with the real values ...
+    assert seen[0].url.params["u"] == EMAIL
+    assert dict(httpx.QueryParams(seen[0].content.decode())) == {"email": EMAIL, "password": PASSWORD}
+    assert seen[0].headers["authorization"] == f"Basic {PASSWORD}"
+    # ... and read back only as placeholders.
+    for value in (EMAIL, PASSWORD, httpx.QueryParams({"p": PASSWORD}).get("p")):
+        assert value not in answer
+    assert "urlencoded" not in answer
+    assert "%40" not in answer
+    assert "p%40ss" not in answer
+    assert "{{login.password}}" in answer
+    assert "{{login.email}}" in answer
+
+    # A JSON body too.
+    run(
+        tools,
+        act("http", method="post", url="https://api.acme.example/api", json={"pw": "{{login.password}}"}),
+    )
+    assert json.loads(seen[1].content) == {"pw": PASSWORD}
+
+    # A fixture goes into Git: the login is not in it.
+    run(tools, act("save_fixture", name="logged_in", source="http"))
+    stored = (tmp_path / TESTS / "fixtures" / "acme" / "logged_in.json").read_text()
+    assert PASSWORD not in stored
+    assert EMAIL not in stored
+    assert "{{login.password}}" in stored
+
+    # An unknown field is a mistake the model is told about, without values.
+    with pytest.raises(BadAction, match="no login field 'pin'") as refused:
+        run(tools, act("http", url="https://api.acme.example/?pin={{login.pin}}"))
+    assert PASSWORD not in str(refused.value)
+
+    # A key the agent found somewhere else is still not sent.
+    run(
+        tools,
+        act("http", url="https://api.acme.example/x", headers={"Authorization": "Bearer found-in-a-script"}),
+    )
+    assert "authorization" not in seen[-1].headers
+
+    # Refusals name the address with placeholders only.
+    refused_answer = run(tools, act("http", url="https://elsewhere.example/?p={{login.password}}"))
+    assert refused_answer.startswith("Refused")
+    assert PASSWORD not in refused_answer
+
+
+def test_without_a_login_a_placeholder_is_refused(tmp_path: Path) -> None:
+    tools = toolbox(tmp_path, lambda request: httpx.Response(200))
+    assert tools.login_fields == []
+    with pytest.raises(BadAction, match="no login is stored"):
+        run(tools, act("http", url="https://api.acme.example/?p={{login.password}}"))
+
+
+def test_the_browser_types_the_login_and_the_page_shows_placeholders(tmp_path: Path) -> None:
+    class PageWithEcho:
+        def __init__(self) -> None:
+            self.typed: list[tuple[str, str]] = []
+
+        def type(self, selector: str, text: str) -> str:
+            self.typed.append((selector, text))
+            return f"typed into {selector}"
+
+        def describe(self) -> str:
+            return f'<input name="email" value="{EMAIL}"> Welcome {EMAIL}! ({PASSWORD})'
+
+        def close(self) -> None:
+            pass
+
+    page = PageWithEcho()
+    tools = login_toolbox(tmp_path, lambda request: httpx.Response(200), browser=page)
+    assert run(tools, act("type", selector="#password", text="{{login.password}}")) == "typed into #password"
+    assert page.typed == [("#password", PASSWORD)]
+    looked = run(tools, act("look"))
+    assert EMAIL not in looked
+    assert PASSWORD not in looked
+    assert "Welcome {{login.email}}!" in looked
+
+
+def test_a_whole_agent_run_with_a_login_never_shows_it_to_the_model(tmp_path: Path) -> None:
+    def server(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=f"<p>Signed in as {EMAIL}</p><p>Status: Delivered</p>")
+
+    tools = login_toolbox(tmp_path, server)
+    model = ScriptedModel([
+        act("http", method="post", url="https://api.acme.example/login",
+            form={"email": "{{login.email}}", "password": "{{login.password}}"}),
+        act("finish", summary="logged in"),
+    ])  # fmt: skip
+    Agent(model, "system", max_steps=5).run(f"task; a login exists, fields {tools.login_fields}", tools)
+    everything = model.system + json.dumps(model.asked)
+    assert EMAIL not in everything
+    assert PASSWORD not in everything
+    assert "Signed in as {{login.email}}" in everything

@@ -34,24 +34,48 @@ const SAMPLES_PER_TASK: i64 = 3;
 const MAX_NOTES: usize = 4000;
 const MAX_SAMPLE: usize = 100_000;
 
-/// Records the answer of a failed execution if it is one the adapter could not read, and
-/// opens a repair task when such failures have piled up. Called for accepted results only.
+/// Records the answer of an execution that points at a broken adapter, and opens a repair
+/// task when such answers have piled up for different shipments. Called for accepted results
+/// only. An answer points at a broken adapter when
+///   - the adapter could not read it (PARSE_ERROR, SCHEMA_DRIFT);
+///   - the login was refused (AUTH_INVALID) although the same login worked since it was
+///     stored: the site's way of logging in probably changed (Phase 12);
+///   - the courier said "not found" for a shipment it showed before (Phase 12).
 pub async fn record_failure(
     conn: &mut PgConnection,
     provider_id: Uuid,
     p: &JobResult,
 ) -> Result<(), sqlx::Error> {
-    let (Some(error), Some(raw)) = (&p.error, &p.raw_response) else {
+    let Some(raw) = &p.raw_response else {
         return Ok(());
     };
-    if p.outcome != JobOutcome::Failure
-        || !matches!(
-            error.class,
-            ErrorClass::ParseError | ErrorClass::SchemaDrift
-        )
-    {
-        return Ok(());
-    }
+    let (class, message) = match (p.outcome, &p.error) {
+        (JobOutcome::Failure, Some(error))
+            if matches!(
+                error.class,
+                ErrorClass::ParseError | ErrorClass::SchemaDrift
+            ) =>
+        {
+            (class_name(error.class), error.message.clone())
+        }
+        (JobOutcome::Failure, Some(error))
+            if error.class == ErrorClass::AuthInvalid
+                && login_worked_before(&mut *conn, p.job_id).await? =>
+        {
+            (
+                class_name(error.class),
+                format!(
+                    "the login was refused although it worked before: {}",
+                    error.message
+                ),
+            )
+        }
+        (JobOutcome::NotFound, _) if found_before(&mut *conn, p.job_id).await? => (
+            "NOT_FOUND".to_string(),
+            "the courier says it does not know a shipment it showed before".to_string(),
+        ),
+        _ => return Ok(()),
+    };
     let inserted = sqlx::query(
         "INSERT INTO adapter_failure_samples
              (id, adapter_key, adapter_version, provider_id, job_id, execution_id, error_class,
@@ -66,8 +90,8 @@ pub async fn record_failure(
     .bind(provider_id)
     .bind(p.job_id)
     .bind(p.execution_id)
-    .bind(class_name(error.class))
-    .bind(&error.message)
+    .bind(class)
+    .bind(clip(&message, 2000))
     .bind(&raw.content_type)
     .bind(&raw.body)
     .execute(&mut *conn)
@@ -89,7 +113,7 @@ pub async fn record_failure(
     let opened: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO repair_tasks (id, kind, adapter_key, adapter_version)
          SELECT $1, 'repair', $2, $3
-          WHERE (SELECT count(DISTINCT job_id) FROM adapter_failure_samples
+          WHERE (SELECT count(DISTINCT tracking_number) FROM adapter_failure_samples
                   WHERE adapter_key = $2 AND adapter_version = $3
                     AND created_at > now() - make_interval(hours => $5)) >= $4
             AND NOT EXISTS (
@@ -260,6 +284,38 @@ pub async fn finish(pool: &PgPool, id: Uuid, outcome: &Finish) -> Result<bool, s
 }
 
 /// The class as it is written in messages, e.g. `SCHEMA_DRIFT`.
+/// Whether a lookup of this job's courier, with the login this job uses, succeeded after the
+/// login was stored.
+async fn login_worked_before(conn: &mut PgConnection, job_id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM tracking_jobs j
+               JOIN shipments s ON s.id = j.shipment_id
+               JOIN provider_credentials c
+                    ON c.provider_id = s.provider_id AND c.revoked_at IS NULL
+                   AND c.organization_id IS NOT DISTINCT FROM
+                       (CASE WHEN s.access_scope LIKE 'org:%' THEN substr(s.access_scope, 5)::uuid END)
+               JOIN shipments s0 ON s0.provider_id = s.provider_id AND s0.access_scope = s.access_scope
+               JOIN tracking_jobs j0 ON j0.shipment_id = s0.id
+              WHERE j.id = $1 AND j0.outcome = 'SUCCESS' AND j0.completed_at > c.created_at)",
+    )
+    .bind(job_id)
+    .fetch_one(conn)
+    .await
+}
+
+/// Whether the courier showed this job's shipment before (it has events).
+async fn found_before(conn: &mut PgConnection, job_id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM tracking_events e JOIN tracking_jobs j ON j.shipment_id = e.shipment_id
+                         WHERE j.id = $1)",
+    )
+    .bind(job_id)
+    .fetch_one(conn)
+    .await
+}
+
 fn class_name(class: ErrorClass) -> String {
     serde_json::to_value(class)
         .ok()
@@ -285,6 +341,12 @@ pub struct NewProvider {
     pub notes: String,
     /// An example answer of the provider, if the operator has one.
     pub sample: Option<String>,
+    /// Where it is tracked (tracking page or API address), if known.
+    #[serde(default)]
+    pub tracking_url: Option<String>,
+    /// A login is stored for it: the AI may log in while it works (see the internal API).
+    #[serde(default)]
+    pub login: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -297,14 +359,14 @@ pub enum RequestError {
     Database(#[from] sqlx::Error),
 }
 
-fn valid_code(code: &str) -> bool {
+pub(crate) fn valid_code(code: &str) -> bool {
     let mut chars = code.chars();
     code.len() <= 30
         && chars.next().is_some_and(|c| c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
-fn valid_host(host: &str) -> bool {
+pub(crate) fn valid_host(host: &str) -> bool {
     host.len() <= 253
         && host.contains('.')
         && host.split('.').all(|label| {
@@ -323,6 +385,17 @@ async fn open(
     kind: &str,
     adapter_key: &str,
     request: Value,
+) -> Result<Uuid, RequestError> {
+    open_as(pool, kind, adapter_key, request, "admin").await
+}
+
+/// Opens a task; `actor_type` says who asked (an admin, or the Engine by itself).
+pub(crate) async fn open_as(
+    pool: &PgPool,
+    kind: &str,
+    adapter_key: &str,
+    request: Value,
+    actor_type: &str,
 ) -> Result<Uuid, RequestError> {
     let id = Uuid::now_v7();
     let mut tx = pool.begin().await?;
@@ -343,7 +416,7 @@ async fn open(
     audit(
         &mut tx,
         Audit {
-            actor_type: "admin",
+            actor_type,
             action: "repair.requested",
             allowed: true,
             details: Some(json!({ "task_id": id, "adapter_key": adapter_key, "kind": kind })),

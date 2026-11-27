@@ -53,6 +53,12 @@ pub async fn run_reaper(
 
 pub async fn run_poll_scheduler(pool: PgPool, interval: Duration, shutdown: CancellationToken) {
     loop {
+        // Couriers without an adapter: ask the AI repair service for one (Phase 12).
+        match super::onboarding::open_build_tasks(&pool).await {
+            Ok(0) => {}
+            Ok(opened) => tracing::info!(opened, "new-adapter tasks opened"),
+            Err(error) => tracing::error!(%error, "opening new-adapter tasks failed"),
+        }
         match poll_due(&pool, BATCH).await {
             Ok(stats) if stats.total() as i64 == BATCH => continue,
             Ok(stats) if stats.total() > 0 => {

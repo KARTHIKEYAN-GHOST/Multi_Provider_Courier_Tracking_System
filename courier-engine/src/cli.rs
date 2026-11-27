@@ -99,6 +99,10 @@ enum AdminCommand {
         /// A name for the operator, for example "production key 2026"
         #[arg(long, default_value = "default")]
         label: String,
+        /// Store it as this organization's own login (its users' lookups use it). Without it,
+        /// the platform's login, used by everyone who has none of their own.
+        #[arg(long)]
+        organization: Option<String>,
     },
     /// Revoke the provider's credential in use
     RevokeCredential {
@@ -119,30 +123,49 @@ enum AdminCommand {
         #[arg(long)]
         prefix: String,
     },
-    /// Ask the AI repair service to write an adapter for a provider that has none yet
-    RequestAdapter {
-        /// The new provider's code: lowercase letters and digits (also the adapter's name)
+    /// Add a courier that has no adapter yet: the AI builds the adapter by itself, and
+    /// tracking requests for it wait until it is ready
+    #[command(alias = "request-adapter")]
+    AddProvider {
+        /// Lowercase letters and digits; made from the name when left out
         #[arg(long)]
-        code: String,
+        code: Option<String>,
         /// The courier's name as shown to users
         #[arg(long)]
         name: String,
         /// How it is tracked: api or scrape
         #[arg(long)]
         method: String,
-        /// Host names the adapter may contact, separated by commas (e.g. api.example.com)
+        /// The tracking page or API address, e.g. https://www.example.com/track?no=
+        #[arg(long)]
+        tracking_url: String,
+        /// Further hosts it may contact, separated by commas
         #[arg(long, value_delimiter = ',')]
         hosts: Vec<String>,
-        /// The provider's API needs a credential (stored later with set-credential)
-        #[arg(long)]
-        needs_credential: bool,
-        /// How the provider is tracked: address, parameters, what the answer looks like
-        #[arg(long)]
+        /// How it is tracked: parameters, what the answer looks like, a test number
+        #[arg(long, default_value = "")]
         notes: String,
-        /// A file with an example answer of the provider (JSON or HTML), if you have one
+        /// For a website: its owner has permitted automatic lookups
+        #[arg(long)]
+        permitted: bool,
+        /// Its API or website needs a login (store it with --login-file or set-credential)
+        #[arg(long)]
+        needs_login: bool,
+        /// A JSON file with the login, e.g. {"email": "...", "password": "..."}; stored
+        /// encrypted as the platform's login
+        #[arg(long)]
+        login_file: Option<std::path::PathBuf>,
+        /// A file with an example answer of the courier (JSON or HTML), if you have one
         #[arg(long)]
         sample_file: Option<std::path::PathBuf>,
     },
+    /// Start building the adapter of a courier marked failed again (three more tries)
+    RetryProvider {
+        #[arg(long)]
+        code: String,
+    },
+    /// List couriers with their status (building, live, failed)
+    ListProviders,
     /// Ask for a repair of an adapter now, from its stored unreadable answers
     RequestRepair {
         #[arg(long)]
@@ -479,7 +502,11 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
             println!("Store this key now. It cannot be shown again.");
         }
         AdminCommand::GenerateMasterKey => unreachable!("handled before the database is opened"),
-        AdminCommand::SetCredential { provider, label } => {
+        AdminCommand::SetCredential {
+            provider,
+            label,
+            organization,
+        } => {
             let store = secret_store(config)?
                 .context("CREDENTIAL_MASTER_KEY is not set; credentials cannot be stored")?;
             let mut input = String::new();
@@ -495,7 +522,24 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
                         "standard input must be a JSON object, for example {{\"api_key\": \"...\"}}"
                     )
                 })?;
-            let id = credentials::set_credential(pool, &store, &provider, &label, &secret).await?;
+            let organization = match organization {
+                Some(name) => Some(
+                    db::api_keys::find_organization_id(pool, name.trim())
+                        .await?
+                        .with_context(|| format!("no organization named {name:?}"))?,
+                ),
+                None => None,
+            };
+            let id = credentials::set_credential_for(
+                pool,
+                &store,
+                &provider,
+                &label,
+                &secret,
+                organization,
+                "admin",
+            )
+            .await?;
             println!("credential_id: {id}");
             println!("The previous credential of this provider, if any, has been revoked.");
         }
@@ -535,34 +579,112 @@ async fn admin(pool: &PgPool, config: &Config, command: AdminCommand) -> anyhow:
             }
             println!("revoked");
         }
-        AdminCommand::RequestAdapter {
+        AdminCommand::AddProvider {
             code,
             name,
             method,
+            tracking_url,
             hosts,
-            needs_credential,
             notes,
+            permitted,
+            needs_login,
+            login_file,
             sample_file,
         } => {
-            let sample = match sample_file {
-                Some(path) => Some(std::fs::read_to_string(&path).map_err(|e| {
-                    anyhow::anyhow!("cannot read the sample file {}: {e}", path.display())
-                })?),
+            let read = |path: &std::path::Path, what: &str| {
+                std::fs::read_to_string(path).map_err(|e| {
+                    anyhow::anyhow!("cannot read the {what} file {}: {e}", path.display())
+                })
+            };
+            let sample = sample_file
+                .as_deref()
+                .map(|p| read(p, "sample"))
+                .transpose()?;
+            let login = match login_file.as_deref() {
+                Some(path) => {
+                    // A parse error is reported without the content, which holds the secret.
+                    Some(serde_json::from_str::<credentials::SecretFields>(&read(path, "login")?).map_err(
+                        |_| anyhow::anyhow!("the login file must hold a JSON object, e.g. {{\"email\": \"...\", \"password\": \"...\"}}"),
+                    )?)
+                }
                 None => None,
             };
-            let spec = crate::services::repairs::NewProvider {
-                code,
-                name,
-                method,
-                hosts,
-                needs_credential,
-                notes,
-                sample,
-            };
-            let id = crate::services::repairs::request_new_provider(pool, &spec)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!("repair task {id} created for new provider {}", spec.code);
+            let store = secret_store(config)?;
+            let added = crate::services::onboarding::add_courier(
+                pool,
+                store.as_ref(),
+                crate::services::onboarding::Adder {
+                    user_id: None,
+                    organization_id: None,
+                    is_admin: true,
+                },
+                crate::services::onboarding::NewCourier {
+                    code,
+                    name,
+                    method,
+                    tracking_url,
+                    hosts,
+                    notes,
+                    permitted,
+                    needs_login,
+                    login,
+                    sample,
+                },
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!(
+                "courier {} added (building); the AI repair service builds its adapter now",
+                added.code
+            );
+            println!("Follow it with: admin list-providers, admin list-repairs");
+        }
+        AdminCommand::RetryProvider { code } => {
+            if !crate::services::onboarding::retry(pool, &code).await? {
+                bail!("there is no courier marked failed with this code");
+            }
+            println!("{code}: building again");
+        }
+        AdminCommand::ListProviders => {
+            #[derive(sqlx::FromRow)]
+            struct Row {
+                code: String,
+                name: String,
+                method: String,
+                status: String,
+                enabled: bool,
+                permitted: bool,
+                failure: Option<String>,
+            }
+            let rows: Vec<Row> = sqlx::query_as(
+                "SELECT code, name, tracking_method::text AS method, status, enabled,
+                        scraping_authorized AS permitted, build_failure AS failure
+                   FROM providers ORDER BY code",
+            )
+            .fetch_all(pool)
+            .await?;
+            for r in rows {
+                let flags = format!(
+                    "{}{}",
+                    if r.enabled { "" } else { " disabled" },
+                    if r.method == "scrape" && !r.permitted {
+                        " no-permission"
+                    } else {
+                        ""
+                    }
+                );
+                println!(
+                    "{:16} {:9} {:7} {}{flags}",
+                    r.code, r.status, r.method, r.name
+                );
+                if let Some(failure) = r.failure {
+                    println!(
+                        "{:16} failed: {}",
+                        "",
+                        failure.chars().take(300).collect::<String>()
+                    );
+                }
+            }
         }
         AdminCommand::RequestRepair { adapter } => {
             let id = crate::services::repairs::request_repair(pool, &adapter)

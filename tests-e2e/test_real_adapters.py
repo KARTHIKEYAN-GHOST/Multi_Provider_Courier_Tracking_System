@@ -13,6 +13,12 @@ import pytest
 from fake_dhl import FakeDhl
 from harness import Stack, User, number, wait_until
 
+#: DHL's own login in use (other tests store logins for other couriers).
+DHL_LOGIN = (
+    "SELECT c.id::text FROM provider_credentials c JOIN providers p ON p.id = c.provider_id "
+    "WHERE c.revoked_at IS NULL AND p.code = 'dhl'"
+)
+
 DHL_KEY = "e2e-dhl-api-key-0123456789-DO-NOT-LEAK"
 
 
@@ -164,7 +170,7 @@ def test_a_dhl_shipment_is_tracked_with_the_stored_credential_and_the_key_never_
     (outbox,) = stack.query(
         "SELECT payload FROM outbox_messages WHERE payload -> 'payload' ->> 'job_id' = %s", job["id"]
     )
-    (credential,) = stack.query("SELECT id::text FROM provider_credentials WHERE revoked_at IS NULL")
+    (credential,) = stack.query(DHL_LOGIN)
     assert outbox["payload"]["payload"]["credential_ref"] == credential["id"]
     haystack = everything_stored_or_sent(stack)
     assert DHL_KEY not in haystack
@@ -198,7 +204,7 @@ def test_the_internal_api_refuses_everyone_but_the_right_worker(stack: Stack, us
         stack.stop_worker("dhl")  # keep the job in flight
         request_id = user.submit(number("DELIVERED", "DHL").replace("-", ""), "dhl")
         job_id = user.job(request_id)["id"]
-        (credential,) = stack.query("SELECT id::text FROM provider_credentials WHERE revoked_at IS NULL")
+        (credential,) = stack.query(DHL_LOGIN)
         body = {"credential_ref": credential["id"], "job_id": job_id, "attempt": 1}
         url = f"{stack.internal_url}/internal/v1/credentials/resolve"
         dhl_token = stack.workers["dhl"].env["WORKER_TOKEN"]

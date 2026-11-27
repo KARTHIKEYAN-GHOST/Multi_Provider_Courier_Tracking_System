@@ -37,12 +37,19 @@ pub enum DispatchError {
     ProviderUnavailable,
     #[error("the provider's adapter is being repaired")]
     UnderRepair,
+    #[error("the provider's adapter is being built")]
+    AdapterBeingBuilt,
+    #[error("no adapter could be built for the provider")]
+    AdapterBuildFailed,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
 pub struct NewTrackingRequest<'a> {
     pub user_id: Uuid,
+    /// The caller's organization (`None` for an admin): its own login, if it has one for the
+    /// provider, is used, and such lookups are shared only inside the organization.
+    pub organization_id: Option<Uuid>,
     pub provider_code: &'a str,
     pub tracking_number: &'a str,
     pub reference: Option<&'a str>,
@@ -85,16 +92,40 @@ async fn try_create(
 ) -> Result<Subscribed, DispatchError> {
     let mut tx = pool.begin().await?;
 
-    let target = db::providers::dispatch_target_by_code(&mut tx, input.provider_code)
-        .await?
-        .ok_or(DispatchError::UnknownProvider)?;
+    let Some(target) = db::providers::dispatch_target_by_code(&mut tx, input.provider_code).await?
+    else {
+        // No adapter (yet). A courier whose adapter is being built accepts the request; the
+        // lookup starts by itself once the adapter is live.
+        return match db::providers::state_by_code(&mut tx, input.provider_code).await? {
+            Some(p) if p.enabled && p.status == "building" => {
+                let subscribed = subscribe_waiting(&mut tx, input, number, p.id).await?;
+                tx.commit().await?;
+                Ok(subscribed)
+            }
+            Some(p) if p.enabled && p.status == "failed" => Err(DispatchError::AdapterBuildFailed),
+            // A disabled courier is not shown to users: as unknown as one that never existed.
+            _ => Err(DispatchError::UnknownProvider),
+        };
+    };
+
+    // 1. Shipment: find or create, and lock the row for the rest of this transaction.
+    let scope =
+        db::providers::scope_for(&mut tx, target.provider_id, input.organization_id).await?;
+    let target = DispatchTarget {
+        credential_id: if scope == "public" {
+            target.credential_id
+        } else {
+            None
+        },
+        ..target
+    };
+    let shipment =
+        tracking::upsert_active_shipment(&mut tx, target.provider_id, number, &scope).await?;
+    let target = db::providers::scoped(&mut tx, target, shipment.id).await?;
     if let Some(reason) = target.blocked_reason() {
         tracing::warn!(provider = %target.provider_code, reason, "tracking request refused");
         return Err(DispatchError::ProviderUnavailable);
     }
-
-    // 1. Shipment: find or create, and lock the row for the rest of this transaction.
-    let shipment = tracking::upsert_active_shipment(&mut tx, target.provider_id, number).await?;
 
     // 2. Subscription: create, or find the caller's existing one.
     let (request_id, created) =
@@ -143,6 +174,35 @@ async fn try_create(
     })
 }
 
+/// Subscribes the caller to a shipment of a courier whose adapter is still being built. No
+/// job is created: the polling scheduler looks again shortly and starts the lookup once the
+/// adapter is live.
+async fn subscribe_waiting(
+    conn: &mut PgConnection,
+    input: &NewTrackingRequest<'_>,
+    number: &str,
+    provider_id: Uuid,
+) -> Result<Subscribed, DispatchError> {
+    let scope = db::providers::scope_for(conn, provider_id, input.organization_id).await?;
+    let shipment = tracking::upsert_active_shipment(conn, provider_id, number, &scope).await?;
+    let (request_id, created) =
+        match tracking::insert_request(conn, input.user_id, shipment.id, input.reference).await? {
+            Some(id) => (id, true),
+            None => (
+                tracking::find_active_request_id(conn, input.user_id, shipment.id)
+                    .await?
+                    .ok_or(sqlx::Error::RowNotFound)?,
+                false,
+            ),
+        };
+    super::polling::defer_for_build(conn, shipment.id).await?;
+    Ok(Subscribed {
+        request_id,
+        created,
+        job_id: None,
+    })
+}
+
 /// What a refresh did. The two cases are reported separately so a client can tell
 /// "your refresh started a lookup" from "a lookup was already running".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -182,9 +242,20 @@ pub async fn refresh(
     if owned.archived_at.is_some() {
         return Err(DispatchError::ShipmentArchived);
     }
-    let target = db::providers::dispatch_target_by_id(&mut tx, owned.provider_id)
-        .await?
-        .ok_or(DispatchError::ProviderUnavailable)?;
+    let Some(target) = db::providers::dispatch_target_by_id(&mut tx, owned.provider_id).await?
+    else {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM providers WHERE id = $1 AND enabled")
+                .bind(owned.provider_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        return Err(match status.as_deref() {
+            Some("building") => DispatchError::AdapterBeingBuilt,
+            Some("failed") => DispatchError::AdapterBuildFailed,
+            _ => DispatchError::ProviderUnavailable,
+        });
+    };
+    let target = db::providers::scoped(&mut tx, target, owned.shipment_id).await?;
     if let Some(reason) = target.blocked_reason() {
         tracing::warn!(provider = %target.provider_code, reason, "refresh refused");
         return Err(DispatchError::ProviderUnavailable);

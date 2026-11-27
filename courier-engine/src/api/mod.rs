@@ -16,7 +16,7 @@ use axum::{
     http::{HeaderName, HeaderValue},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::de::DeserializeOwned;
 use tracing::Instrument;
@@ -34,7 +34,8 @@ pub fn router(state: AppState) -> Router {
     // Every /v1 route sits behind the API-key check. It is applied as a layer on the group,
     // so a handler cannot accidentally be left unauthenticated.
     let v1 = Router::new()
-        .route("/providers", get(providers::list))
+        .route("/providers", get(providers::list).post(providers::add))
+        .route("/providers/{code}/login", put(providers::set_login))
         .route(
             "/tracking-requests",
             post(tracking_requests::create).get(tracking_requests::list),
