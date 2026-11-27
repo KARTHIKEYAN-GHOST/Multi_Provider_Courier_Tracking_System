@@ -81,9 +81,12 @@ def test_the_sites_not_found_page_is_recognized_although_it_is_http_200() -> Non
         parse_tracking_page(page("notfound"))
 
 
-def test_a_redesigned_page_is_reported_as_schema_drift_not_as_an_empty_result() -> None:
-    with pytest.raises(SchemaDrift, match="no history table"):
-        parse_tracking_page(page("newlayout"))
+def test_the_redesigned_timeline_page_is_parsed_into_its_events() -> None:
+    events = parse_tracking_page(page("newlayout"))
+    assert [e.raw_status for e in events] == ["Booked", "Picked up", "In transit"]
+    assert events[0].occurred_at == datetime(2026, 6, 11, 5, 31, tzinfo=UTC), "11:01 IST is 05:31 UTC"
+    assert events[-1].location is not None
+    assert (events[-1].location.city, events[-1].location.country) == ("Bengaluru", "IN")
 
 
 def test_an_unreadable_date_is_a_parse_error_that_does_not_quote_the_page() -> None:
@@ -164,7 +167,6 @@ async def test_a_page_is_fetched_and_parsed_and_kept_as_received(site: str) -> N
         ("DEMO-BUSY-1", ProviderServerError),
         ("DEMO-LIMIT-1", RateLimited),
         ("DEMO-BLOCKED-1", Blocked),
-        ("DEMO-NEWLAYOUT-1", SchemaDrift),
         ("DEMO-BADDATE-1", ParseError),
     ],
 )
@@ -173,6 +175,11 @@ async def test_every_site_behaviour_is_classified(site: str, number: str, error:
         await track(site, number)
     if error is RateLimited:
         assert raised.value.retry_after_ms == 2000  # type: ignore[attr-defined]
+
+
+async def test_the_sites_timeline_layout_is_read(site: str) -> None:
+    statuses, _ = await track(site, "DEMO-NEWLAYOUT-1")
+    assert statuses == ["Booked", "Picked up", "In transit"]
 
 
 async def test_a_moving_parcel_shows_one_more_step_on_every_visit(site: str) -> None:
