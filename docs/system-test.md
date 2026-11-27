@@ -1,6 +1,6 @@
 # Whole-system test (live, with Claude)
 
-On 2026-11-27 the whole system was run from top to bottom on this machine: the real Engine,
+The whole system was run from top to bottom twice on 2026-11-27 on this machine: the real Engine,
 real workers, PostgreSQL, RabbitMQ, Redis, the demo courier website, the AI repair service
 with Claude (`claude-code`, `claude-opus-5-5`) pushing to GitHub, and the automatic update
 pulling, checking and deploying. Nothing was simulated.
@@ -9,6 +9,8 @@ The stack used its own database (`courier_systest`), its own queue prefix (`syst
 its own ports (Engine 18080/18081, human interface 18088), so the development stack and its
 database were not touched. Users: an organization user (`user@systest.example`, organization
 "Systest Traders") and an admin (`ops@systest.example`).
+
+# First run
 
 ## Results
 
@@ -99,19 +101,113 @@ courier's own status text, the normalized status, the parsed place).
 once in a full run (it waits on the 60-second recheck of waiting requests) and passed in
 every run since.
 
-## Not covered by this run
+# Second run: adapters removed, so the agent does the work again
+
+Before the second run, the AI-built code was taken out of `main` (`e4774bd`): Demo Express
+was deleted entirely (adapter, tests, queues, worker, migration) and the demo-site adapter was
+rolled back to 0.2.0, as before the AI's repair. A new demo courier was added to the demo
+site, **Demo Secure**, whose tracking page needs a sign-in (form with a one-time token,
+session cookie, its own page layout), so the agent had to build an adapter that logs in.
+
+Fresh stack: database `courier_systest2`, queue prefix `systest2.`, its own demo site on port
+18090 (current code; the Demo Secure password random, only in a private file).
+
+## Results
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Existing adapters (dummy, demo site; also "not found") | passed |
+| 2a | CAPTCHA answered by a person | passed |
+| 2b | One-time code answered by a person | not passed: every answer was wrong (see below) |
+| 3 | The adapter breaks; the AI repairs it | passed |
+| 4 | No adapter (Demo Express, put into the database); the AI builds it | passed on its third try (two system problems found and fixed on the way) |
+| 5 | No adapter and a login (Demo Secure); the AI builds it with the login | passed |
+| 6 | Couriers with local tracking addresses through the API | refused (422) |
+
+### Timeline
+
+| Time | What happened |
+|---|---|
+| 17:55 | Three redesigned pages: `SCHEMA_DRIFT`; the Engine opens a repair of `demosite` |
+| 17:55 | Demo Express inserted into the database; a user's request waits (a refresh gets `adapter_being_built`); its build task opens |
+| 17:58 | Demo Secure inserted (stopped), its login stored by the organization user through `PUT /v1/providers/demosecure/login` (encrypted, the organization's own), `admin retry-provider` starts the build; a request waits |
+| 17:58 | Claude's repair of the demo site published (`3c99248`), deployed 17:59; the failed shipment and a new one complete |
+| 18:02 | Demo Express try 1 fails: GitHub cut the AI service's clone off (`early EOF`), not retried |
+| 18:08 | Claude's Demo Secure adapter published (`79ba431`): it signs in with `{{login.email}}`/`{{login.password}}` while building, and with `ctx.credentials()` in the adapter. Deployed 18:09; the waiting request completes 11 seconds later |
+| 18:16 | Demo Express try 2 fails at the push: `main` had moved meanwhile (a fix pushed by the operator) |
+| 18:20 | AI service restarted with the fixes below |
+| 18:36 | Demo Express try 3 published (`bf3183d`), deployed 18:41; the request that waited since 17:55 completes (IN_TRANSIT, raw page, 3 events) |
+
+All AI commits of this run passed every GitHub check.
+
+### The login was never exposed
+
+- The password is in no commit, no file of the checkout, no AI log or working folder, and no
+  database table (raw pages included); the AI even replaced the account's email by a
+  placeholder in the saved pages.
+- Audited: `credential.set` (by the user), `credential.agent_use` (the AI, once, while its
+  task ran), `credential.resolve` (the worker).
+- The lookup used the organization's own login; the shipment is shared only inside that
+  organization (`access_scope = org:...`).
+
+### The one-time code
+
+Four OTP lookups failed: each new challenge was answered with a wrong code within 2 to 13
+seconds of being created, three times in a row (then `CHALLENGE_LIMIT_EXCEEDED`), from the
+admin's key. The system's side was checked: the deployed adapter gets the tracking page with
+the right code and the "try again" page with a wrong one, the pretend phone shows the code
+the site expects, and the CAPTCHA (same path) was answered and completed. The answers came
+faster than a person reads and types a code; the cause was outside the system and is to be
+retried. Wrong answers were handled as they should be: a new challenge saying the previous
+answer was not accepted, and a stop after three.
+
+## Problems found, and what was done
+
+1. **Security: the agent could be pointed at this machine** (`e4774bd`). For a new courier
+   the agent may reach the exact tracking address even on this machine, assumed to be set
+   only by the operator. But any API user can register a public-looking name that resolves
+   to 127.0.0.1, with any port (the Engine's internal API, for example). Now the exception
+   holds only for an address written as a local one (IP, `localhost`), which the API refuses.
+2. **A refused login was reported as `SCHEMA_DRIFT`** by the adapter the AI wrote (tested
+   live with a wrong stored password). Three of those would send a working adapter to be
+   repaired. Cause: the agent's rules never said what a refused login is. They now say
+   `AuthInvalid`, and ask the agent to try a wrong password once while building (`16e4ece`).
+   The adapter was fixed by hand (`1dbbeed`, 0.1.1): it raised before keeping the page, so no
+   sample was stored and no repair task could be opened for it. Live again: wrong password
+   `AUTH_INVALID`, right password data.
+3. **A finished adapter was thrown away because `main` moved during the task** (Demo Express
+   try 2). Now the work is replayed on top of what was pushed meanwhile, checked again and
+   pushed, never forced; a conflict, a migration number taken meanwhile or failing checks
+   still fail the task (`b65d427`).
+4. **A clone cut off by GitHub was not retried** (Demo Express try 1: "unexpected disconnect",
+   "early EOF" were not recognized as network trouble). Now they are (`b65d427`).
+5. **With the demo-site adapter rolled back, an end-to-end test paused the courier for the
+   tests after it**: its third unreadable shipment opened a repair. The test no longer uses
+   the page whose result depends on the adapter's version (`e4774bd`).
+6. The test stack's deploy no longer stops the AI service (the first run's stuck task).
+
+## The automated suites after the second run
+
+1033 tests pass: 99 contract, 210 Engine, 474 adapter, 31 human interface, 160 AI repair
+service, 59 end-to-end.
+
+## Not covered by these runs
 
 - The Docker parts (`make deploy`, `make worker-tokens`, the containers) are run by the
   owner, since the test machine's shell has no Docker access. The same steps were run as
   local processes.
 - No real courier website was scraped (that needs its owner's permission); the AI built and
   repaired adapters for the demo site.
-- The courier's login through placeholders was not exercised live (Demo Express has no
-  login); it is covered by the automated tests.
+- The one-time code by a person passed in the first run; in the second it was answered
+  wrongly (see above) and is to be retried.
+- The automatic update deploys what it pulls; a commit made in the same checkout is already
+  there and is deployed with `make deploy` by hand.
 
 ## Repeating it
 
 The scenarios and the commands are in [phase-12.md](phase-12.md) ("Step by step"). On the
 demo site: `DEMO-OK-*`, `DEMO-TRANSIT-*` (work), `DEMO-OTP-*`, `DEMO-CAPTCHA-*` (a person
 answers; the code is at `http://127.0.0.1:8090/inbox?number=...`), `DEMO-NEWLAYOUT-*` (the
-redesigned page; read since demosite 0.2.1), `DEMO-SCRAMBLED-*` (unreadable by any version).
+redesigned page; read once an AI repair taught the adapter), `DEMO-SCRAMBLED-*` (unreadable by
+any version). Demo Secure: `/secure/track?number=` behind `/secure/login`, with the account in
+`DEMO_SITE_SECURE_EMAIL` and `DEMO_SITE_SECURE_PASSWORD` (without a password it answers 503).

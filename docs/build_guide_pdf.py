@@ -774,11 +774,19 @@ H2("Problems found")
 B("GitHub's checks failed on the AI's repair commit: two older tests assumed the demo-site adapter would never change (a fixed version 0.2.0, and the redesigned page as the example of an unreadable page). Both tests now follow the adapter; the demo site has a page no version can read, DEMO-SCRAMBLED-*. The automatic update had deployed the commit because it runs the contract and adapter checks only; the deployed adapter was right.",
   "A repair task is left running when the AI service stops in the middle (here the test's own deploy script stopped it). The Engine hands it out again after two hours; it then finished on its second try.")
 
+H2("Second run: adapters removed, a courier with a login")
+P("For the second run the AI-built code was taken out of main: Demo Express deleted, the demo-site adapter rolled back to 0.2.0. The demo site gained Demo Secure, a courier whose tracking page needs a sign-in. Claude repaired the demo-site adapter (3 minutes), built Demo Secure while signing in through {{login.email}} and {{login.password}} placeholders (10 minutes), and built Demo Express on its third try. Every request that waited returned its data by itself after the deploy, and all AI commits passed every GitHub check.")
+B("The password of Demo Secure is in no commit, file, AI log or table; the lookup used the organization's own login, audited at every use.",
+  "Security fix: the agent could be pointed at this machine through a public name that resolves to 127.0.0.1; now only an address written as a local one (which the API refuses) is exempt.",
+  "A refused login was reported as SCHEMA_DRIFT by the adapter the AI wrote; the agent's rules now say AuthInvalid, and the adapter was fixed (0.1.1).",
+  "Demo Express lost one try to a clone cut off by GitHub and one to main moving during the task; cut connections are now retried and work is replayed on top of a moved branch, checked again and pushed, never forced.",
+  "The one-time code was answered wrongly in the second run (answers came within seconds of each challenge, from outside the system); the CAPTCHA passed, and the OTP passed in the first run.")
+
 # ---------------------------------------------------------------- 20
 H1("20. Current state, open points and what comes next")
 H2("Verified")
-B("1005 automated tests pass: 99 contract, 210 Engine, 456 adapter, 31 human-interface, 150 AI repair service, 59 end-to-end.",
-  "The whole system ran live with Claude: two adapters (a repair and a new courier) written, pushed, pulled and deployed with no person involved (chapter 19).",
+B("1033 automated tests pass: 99 contract, 210 Engine, 474 adapter, 31 human-interface, 160 AI repair service, 59 end-to-end.",
+  "The whole system ran live with Claude twice: repairs and new couriers, one with a login, written, pushed, pulled and deployed with no person involved (chapter 19).",
   "The real Engine binary and real worker process work together through real PostgreSQL and RabbitMQ, including crash, hang, restart and duplicate scenarios.",
   "The worker runs correctly with the restricted RabbitMQ account.")
 H2("Not yet verified")
@@ -788,7 +796,7 @@ B("The Docker images and the full container stack (make up, make smoke) had not 
   "The AI repair service has written one adapter (The Professional Couriers) with a free model and pushed it to GitHub; that adapter has never read a real result page.",
   "The agent has completed real tasks with Claude only against the demo courier website (chapter 19); no real courier website has been built or repaired by it yet.",
   "The Redis and human-interface containers have not been started by the author either; the tests used a Redis on the development machine and the human interface as a local process.",
-  "The courier's login through placeholders has been tested with a stand-in model only; the live test's couriers had no login.",
+  "The courier's login through placeholders has been used live only with the demo site's Demo Secure courier.",
   "make deploy and make worker-tokens have been run only with a stand-in for Docker (worker-tokens needs Docker Compose 2.24 or newer).",
   "Master-key and session-key rotation tooling and an external secrets manager are not built.")
 H2("Open decisions and leftovers")
