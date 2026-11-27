@@ -47,7 +47,7 @@ def test_scraping_outcomes_are_classified(stack: Stack, user: User) -> None:
     with stack.provider("demosite", retry_base_ms=200, max_attempts=2):
         requests = {
             kind: user.submit(number(kind, "DEMO"), "demosite")
-            for kind in ("TRANSIT", "NOTFOUND", "NEWLAYOUT", "SCRAMBLED", "BADDATE", "BLOCKED", "BUSY", "LIMIT")
+            for kind in ("TRANSIT", "NOTFOUND", "SCRAMBLED", "BADDATE", "BLOCKED", "BUSY", "LIMIT")
         }
         jobs = {kind: user.wait_for(request_id, timeout_s=30) for kind, request_id in requests.items()}
 
@@ -58,8 +58,9 @@ def test_scraping_outcomes_are_classified(stack: Stack, user: User) -> None:
     assert summary("TRANSIT") == ("COMPLETED", "SUCCESS", 1)
     assert jobs["TRANSIT"]["shipment_status"] == "IN_TRANSIT"
     assert summary("NOTFOUND") == ("COMPLETED", "NOT_FOUND", 1)
-    # The redesigned page was learned by an AI repair (demosite adapter 0.2.1).
-    assert summary("NEWLAYOUT") == ("COMPLETED", "SUCCESS", 1)
+    # (Not the redesigned page DEMO-NEWLAYOUT: whether it is readable depends on whether an AI
+    # repair has taught the adapter its layout. And two unreadable answers here, not three: a
+    # third shipment would open a repair and pause the courier for the tests that follow.)
     # A page no adapter version knows, or an unreadable value, will not fix itself: no retry.
     assert summary("SCRAMBLED") == ("FAILED", "SCHEMA_DRIFT", 1)
     assert summary("BADDATE") == ("FAILED", "PARSE_ERROR", 1)

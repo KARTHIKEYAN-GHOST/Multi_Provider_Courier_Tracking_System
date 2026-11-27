@@ -361,22 +361,6 @@ services:
       engine:
         condition: service_healthy
 
-  # Demo Express (adapter written by the AI repair service). Started only on request.
-  adapter-demoexpress:
-    profiles: ["couriers", "demoexpress"]
-    build: *worker-build
-    image: courier-adapter-worker:local
-    command: ["-m", "adapters.demoexpress"]
-    restart: unless-stopped
-    stop_grace_period: 40s
-    environment:
-      WORKER_AMQP_URL: amqp://${RABBITMQ_WORKER_USER}:${RABBITMQ_WORKER_PASSWORD}@rabbitmq:5672/${RABBITMQ_VHOST}
-      WORKER_CONCURRENCY: ${DEMOEXPRESS_WORKER_CONCURRENCY:-2}
-      LOG_FORMAT: json
-    depends_on:
-      engine:
-        condition: service_healthy
-
 volumes:
   postgres-data:
   rabbitmq-data:

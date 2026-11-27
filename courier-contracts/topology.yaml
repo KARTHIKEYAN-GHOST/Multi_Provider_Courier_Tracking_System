@@ -143,21 +143,6 @@ queues:
       - exchange: courier.jobs
         routing_key: job.resume.v1.professional
 
-  - name: adapter.demoexpress.jobs
-    durable: true
-    consumer: adapter-worker
-    arguments:
-      x-queue-type: quorum
-      x-delivery-limit: 3
-      x-dead-letter-exchange: courier.dlx
-      x-dead-letter-routing-key: adapter.demoexpress.jobs
-    bindings:
-      - exchange: courier.jobs
-        routing_key: job.track.v1.demoexpress
-      # A lookup continued after a human answer; same queue, same delivery limit.
-      - exchange: courier.jobs
-        routing_key: job.resume.v1.demoexpress
-
   - name: engine.events
     durable: true
     consumer: engine-event-consumer
@@ -247,15 +232,6 @@ queues:
     bindings:
       - exchange: courier.dlx
         routing_key: adapter.professional.jobs
-
-  - name: adapter.demoexpress.jobs.dlq
-    durable: true
-    consumer: engine-dead-letter-consumer
-    arguments:
-      x-queue-type: quorum
-    bindings:
-      - exchange: courier.dlx
-        routing_key: adapter.demoexpress.jobs
 
   # Events the Engine itself rejected as malformed. Parked for operators; not auto-consumed.
   - name: engine.events.dlq

@@ -6,7 +6,8 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from .pages import captcha_image, inbox, render, verify
+from . import secure
+from .pages import Page, captcha_image, inbox, render, verify
 
 _NUMBER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 _CAPTCHA = re.compile(r"^/captcha/([0-9a-f]{32})\.png$")
@@ -25,16 +26,21 @@ class Handler(BaseHTTPRequestHandler):
             if image is None:
                 return self._send(404, "<p>Page not found.</p>")
             return self._send(200, image, "image/png", (("Cache-Control", "no-store"),))
-        if url.path not in ("/track", "/inbox"):
+        query = parse_qs(url.query)
+        if url.path == "/secure/login":
+            return self._page(secure.login_page(query.get("next", ["/secure/track"])[0]))
+        if url.path not in ("/track", "/inbox", "/secure/track"):
             return self._send(404, "<p>Page not found.</p>")
-        number = parse_qs(url.query).get("number", [""])[0]
+        number = query.get("number", [""])[0]
         if not _NUMBER.match(number):
             return self._send(400, "<p>Enter a tracking number.</p>")
-        page = render(number) if url.path == "/track" else inbox(number)
-        self._send(page.status, page.body, headers=page.headers)
+        if url.path == "/secure/track":
+            return self._page(secure.track(number, self.headers.get("Cookie", "")))
+        self._page(render(number) if url.path == "/track" else inbox(number))
 
     def do_POST(self) -> None:
-        if urlsplit(self.path).path != "/verify":
+        path = urlsplit(self.path).path
+        if path not in ("/verify", "/secure/login"):
             return self._send(404, "<p>Page not found.</p>")
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -43,7 +49,11 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= _MAX_FORM_BYTES:
             return self._send(400, "<p>Bad request.</p>")
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
-        page = verify(form.get("token", [""])[0], form.get("answer", [""])[0])
+        if path == "/secure/login":
+            return self._page(secure.sign_in(form))
+        self._page(verify(form.get("token", [""])[0], form.get("answer", [""])[0]))
+
+    def _page(self, page: Page) -> None:
         self._send(page.status, page.body, headers=page.headers)
 
     def _send(

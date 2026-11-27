@@ -79,7 +79,13 @@ class Net:
             return False
         if host not in self.hosts:
             return False
-        return not _inside(host) or (host, port) in self._origins
+        if not _inside(host):
+            return True
+        # An address on this machine only when written as one (an IP address, localhost) and
+        # named exactly: the Engine's API refuses those, so only its operator can set them. A
+        # public-looking name that merely resolves here is never let through: any user of the
+        # API can register such a name for a courier.
+        return _local(host) and (host, port) in self._origins
 
     def static_allowed(self, url: str, kind: str) -> bool:
         """May a page load this part? Approved hosts, and static parts from public hosts."""

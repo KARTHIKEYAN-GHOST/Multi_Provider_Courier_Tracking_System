@@ -248,9 +248,9 @@ class Repairer:
             key, spec.name, spec.method, spec.hosts, spec.needs_credential, spec.notes, sample, reference,
             tracking_url=spec.tracking_url,
         )  # fmt: skip
-        # The exact tracking address (host and port) is reachable even on this machine: the
-        # Engine accepts a local one only from its operator (a row in the database), never
-        # from a user of the API.
+        # The exact tracking address (host and port) is reachable even on this machine, but
+        # only when written as a local address (IP, localhost): the Engine's API refuses those,
+        # so only its operator (a row in the database) can set one. See Net.allowed.
         origins = origins_in(spec.tracking_url) if spec.tracking_url else set()
         summary, paths = self._agent_until_accepted(
             ws, key, message, set(spec.hosts), {}, fixture_names, login, origins

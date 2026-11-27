@@ -3,9 +3,6 @@
 Parsing is separate from fetching so it can be tested (and, later, repaired) against saved
 pages. The page is untrusted input: it is parsed as data only; nothing in it is executed,
 followed or interpreted as an instruction.
-
-The site has two layouts for a tracking page: the older history table
-(``table#history``) and the newer timeline (``div.tracking-v2 ul.timeline``). Both are read.
 """
 
 from __future__ import annotations
@@ -28,13 +25,6 @@ def _text(row: Tag, css_class: str) -> str:
     if not isinstance(cell, Tag):
         raise SchemaDrift(f"a history row has no '{css_class}' cell")
     return cell.get_text(" ", strip=True)
-
-
-def _child_text(item: Tag, name: str) -> str:
-    element = item.find(name)
-    if not isinstance(element, Tag):
-        raise SchemaDrift(f"a timeline item has no '{name}' element")
-    return element.get_text(" ", strip=True)
 
 
 def _location(place: str) -> Location | None:
@@ -72,7 +62,19 @@ def find_verification(html: str) -> Verification | None:
     return Verification(str(kind), token, section.find(class_="verify-error") is not None)
 
 
-def _parse_history_table(table: Tag) -> list[TrackingEvent]:
+def parse_tracking_page(html: str) -> list[TrackingEvent]:
+    """Events in the order they happened.
+
+    Raises ``ShipmentNotFound`` for the site's "no shipment found" page, ``SchemaDrift`` when
+    the page no longer has the structure this parser was written for, and ``ParseError``
+    when the structure is right but a value cannot be understood.
+    """
+    page = BeautifulSoup(html, "html.parser")
+    if page.find(class_="not-found") is not None:
+        raise ShipmentNotFound
+    table = page.find("table", id="history")
+    if not isinstance(table, Tag):
+        raise SchemaDrift("the page has no history table")
     body = table.find("tbody")
     rows = body.find_all("tr") if isinstance(body, Tag) else []
     if not rows:
@@ -96,57 +98,4 @@ def _parse_history_table(table: Tag) -> list[TrackingEvent]:
                 location=_location(_text(row, "place")),
             )
         )
-    return events
-
-
-def _parse_timeline(timeline: Tag) -> list[TrackingEvent]:
-    items = [item for item in timeline.find_all("li", class_="tl-item") if isinstance(item, Tag)]
-    if not items:
-        raise SchemaDrift("the timeline has no items")
-
-    events: list[TrackingEvent] = []
-    for item in items[:_MAX_ROWS]:
-        when, status = _child_text(item, "time"), _child_text(item, "b")
-        if not status:
-            raise ParseError("a timeline item has an empty status")
-        try:
-            parsed = datetime.fromisoformat(when)
-        except ValueError:
-            # The page's own text is not copied into the message that leaves the worker.
-            raise ParseError("a timeline item has a date in an unknown format") from None
-        if parsed.tzinfo is None:
-            # Without an offset the moment is unknown; it is not guessed.
-            raise ParseError("a timeline item has a date without a time zone")
-        place_element = item.find("i")
-        place = place_element.get_text(" ", strip=True) if isinstance(place_element, Tag) else ""
-        events.append(
-            TrackingEvent(
-                raw_status=status[:200],
-                raw_description=None,
-                occurred_at=parsed.astimezone(UTC),
-                location=_location(place),
-            )
-        )
-    return events
-
-
-def parse_tracking_page(html: str) -> list[TrackingEvent]:
-    """Events in the order they happened.
-
-    Raises ``ShipmentNotFound`` for the site's "no shipment found" page, ``SchemaDrift`` when
-    the page no longer has a structure this parser was written for, and ``ParseError``
-    when the structure is right but a value cannot be understood.
-    """
-    page = BeautifulSoup(html, "html.parser")
-    if page.find(class_="not-found") is not None:
-        raise ShipmentNotFound
-    table = page.find("table", id="history")
-    if isinstance(table, Tag):
-        events = _parse_history_table(table)
-    else:
-        container = page.find("div", class_="tracking-v2")
-        timeline = container.find("ul", class_="timeline") if isinstance(container, Tag) else None
-        if not isinstance(timeline, Tag):
-            raise SchemaDrift("the page has no history table")
-        events = _parse_timeline(timeline)
     return sorted(events, key=lambda event: event.occurred_at)

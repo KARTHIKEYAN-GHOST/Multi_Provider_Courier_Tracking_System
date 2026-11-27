@@ -121,6 +121,20 @@ def test_the_agent_reaches_only_approved_addresses() -> None:
     }
 
 
+def test_a_courier_address_on_this_machine_is_reachable_only_when_written_as_one() -> None:
+    # The operator put a courier on this machine into the database: its exact origin is reachable.
+    operator = Net({"127.0.0.1"}, {("127.0.0.1", 8090)}, pause_s=0)
+    assert operator.allowed("http://127.0.0.1:8090/track?number=1")
+    assert not operator.allowed("http://127.0.0.1:8081/internal/v1/repairs/claim"), "only that port"
+    # A user of the API registered a public-looking name that points here, with the Engine's
+    # internal port: never reachable, although it is the courier's own tracking address.
+    named = Net({"courier.attacker.example"}, {("courier.attacker.example", 8081)}, pause_s=0)
+    with patch_resolution({"courier.attacker.example": "127.0.0.1"}):
+        assert not named.allowed("http://courier.attacker.example:8081/internal/v1/repairs/claim")
+    with patch_resolution({"courier.attacker.example": "93.184.215.14"}):
+        assert named.allowed("http://courier.attacker.example:8081/track")
+
+
 def test_the_allowance_of_requests_runs_out() -> None:
     net = Net({"a.example"}, max_requests=2, pause_s=0)
     net.spend("https://a.example/1")
