@@ -61,7 +61,9 @@ A login for this courier is stored, and you may use it to log in while you work:
 open_page, or in the text of type. Fields: {fields}. You never see the values: they are filled
 in when the request is sent, and shown as the placeholder in everything you read back. In the
 adapter's code, read the login with `secret = await ctx.credentials()` (secret["<field>"]); in
-tests and fixtures use made-up values."""
+tests and fixtures use made-up values. Also sign in once with a made-up wrong password, to see
+what a refused login looks like: the adapter raises AuthInvalid for it (never SchemaDrift), and a
+test checks that."""
 
 
 class Files(Protocol):

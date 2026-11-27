@@ -591,3 +591,14 @@ def test_a_whole_agent_run_with_a_login_never_shows_it_to_the_model(tmp_path: Pa
     assert EMAIL not in everything
     assert PASSWORD not in everything
     assert "Signed in as {{login.email}}" in everything
+
+
+def test_the_agent_is_told_that_a_refused_login_is_auth_invalid() -> None:
+    # Found in the live test: an adapter that reported a wrong password as SCHEMA_DRIFT, which
+    # counts towards repairing a working adapter.
+    from ai_repair import prompts
+    from ai_repair.agent.tools import LOGIN_NOTE
+
+    assert "AuthInvalid when the provider refuses the stored login" in prompts._RULES
+    assert "never SchemaDrift" in LOGIN_NOTE
+    assert "made-up wrong password" in LOGIN_NOTE

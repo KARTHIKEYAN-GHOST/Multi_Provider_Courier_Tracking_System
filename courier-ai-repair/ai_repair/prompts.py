@@ -38,7 +38,10 @@ check for it yourself and do not test for another exception.
 the tracking answer before reading it.
 - Report failures with the SDK's exceptions: ShipmentNotFound when the provider says the number \
 is unknown, SchemaDrift when the answer no longer has the expected structure, ParseError when a \
-value in it cannot be read. Never invent events and never guess a date.
+value in it cannot be read, AuthInvalid when the provider refuses the stored login (the \
+sign-in form comes back with an error, or the sign-in answers 401/403). A refused login is never \
+SchemaDrift: that would send a working adapter to be repaired when only the password is wrong. \
+Never invent events and never guess a date.
 - raw_status: use adapters.india.status_code(text) unless the adapter already does otherwise.
 - Raise the adapter's `version` (0.1.0 -> 0.1.1) when you change existing code.
 - Test only behaviour you are sure of from the task and the reference code. A wrong test is \
