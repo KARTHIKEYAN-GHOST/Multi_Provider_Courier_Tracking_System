@@ -34,12 +34,14 @@ from .llm import Model, ModelError
 from .sandbox import Sandbox
 from .scaffold import ProviderSpec, ScaffoldError, scaffold
 from .scrub import scrub
-from .workspace import GitError, Workspace
+from .workspace import GitError, PushRejected, Workspace
 
 log = structlog.get_logger()
 
 #: Shown to the model when it writes a new adapter: one of each kind, plus the shared helpers.
 _REFERENCE = {"api": "delhivery", "scrape": "balaji"}
+#: How often the work is replayed on top of a branch that moved meanwhile, then pushed again.
+_PUSH_TRIES = 3
 _SHARED = (f"{ADAPTERS}/india.py", f"{ADAPTERS}/tables.py", f"{TESTS}/adapter_support.py")
 
 
@@ -259,6 +261,27 @@ class Repairer:
 
     # ------------------------------------------------------------------ entry
 
+    def _push(self, ws: Workspace, task: Task, paths: list[str], sha: str) -> str:
+        """Pushes; when somebody pushed to the branch meanwhile, the work is replayed on top of
+        it and checked again before it is pushed. Never forced."""
+        for _ in range(_PUSH_TRIES):
+            try:
+                ws.push()
+                return sha
+            except PushRejected:
+                sha = ws.take_in_remote()
+                log.info("rebased_on_newer_branch", task=task.id, commit=sha[:12])
+            numbers = [path.name[:4] for path in (ws.repo / "courier-engine" / "migrations").glob("*.sql")]
+            if len(numbers) != len(set(numbers)):
+                raise TaskFailed("a migration with the same number was pushed meanwhile")
+            checked = [path for path in paths if guard.kind_of(path, task.adapter_key)]
+            failed = self._checks(ws, task.adapter_key, checked) if checked else None
+            if failed is not None:
+                raise TaskFailed(f"the checks failed on top of the changes pushed meanwhile: {failed[:2000]}")
+            if ws.changed():
+                raise TaskFailed("the checks changed files on top of the changes pushed meanwhile")
+        raise TaskFailed("the branch kept moving; the work was not pushed")
+
     def process(self, task: Task, *, login: dict[str, str] | None = None) -> Published:
         """Does one task. Raises ``TaskFailed`` (or a model / Git error) when it cannot be done."""
         if not guard.valid_key(task.adapter_key):
@@ -291,7 +314,7 @@ class Repairer:
             if settings.ai_repair_dry_run:
                 log.info("dry_run_not_pushed", task=task.id, commit=sha[:12], paths=paths)
                 return Published(sha, summary, sorted(set(paths)), pushed=False)
-            ws.push()
+            sha = self._push(ws, task, sorted(set(paths)), sha)
             log.info("published", task=task.id, commit=sha[:12], branch=settings.ai_repair_push_branch)
             return Published(sha, summary, sorted(set(paths)), pushed=True)
         except GitError as error:

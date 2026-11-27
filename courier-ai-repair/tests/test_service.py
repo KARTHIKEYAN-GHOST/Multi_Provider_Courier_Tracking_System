@@ -14,6 +14,7 @@ from ai_repair.guard import ADAPTERS, TESTS
 from ai_repair.llm import ModelError
 from ai_repair.sandbox import Bubblewrap, Run
 from ai_repair.service import Repairer, TaskFailed
+from ai_repair.workspace import _NETWORK_TROUBLE, Workspace
 
 from .conftest import ROOT, git
 
@@ -443,3 +444,85 @@ def test_a_new_provider_gets_its_adapter_and_everything_around_it_in_one_commit(
     asked = model.asked[0][0]["content"]
     assert "Approved hosts (the only ones the adapter may contact): api.fastship.example" in asked
     assert "adapters/delhivery/adapter.py" in asked, "an existing adapter is shown as the pattern to follow"
+
+
+# ----------------------------------------------------------------- the branch moves meanwhile
+
+
+def push_meanwhile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, remote: Path, path: str, content: str
+) -> list[str]:
+    """Somebody else pushes one commit to the branch just before the service pushes its own."""
+    pushed: list[str] = []
+    original = Workspace.push
+
+    def push(self: Workspace) -> None:
+        if not pushed:
+            other = tmp_path / "someone-else"
+            git(tmp_path, "clone", "--quiet", str(remote), str(other))
+            (other / path).parent.mkdir(parents=True, exist_ok=True)
+            (other / path).write_text(content)
+            git(other, "add", "-A")
+            git(other, "commit", "--quiet", "-m", "pushed meanwhile")
+            git(other, "push", "--quiet", "origin", "HEAD:main")
+            pushed.append(git(other, "rev-parse", "HEAD"))
+        original(self)
+
+    monkeypatch.setattr(Workspace, "push", push)
+    return pushed
+
+
+def good_repair(source: Path) -> ScriptedModel:
+    right = TEST_FILE.replace("EXPECTED", "ShipmentNotFound")
+    return ScriptedModel([*write({ADAPTER: repaired_adapter(source), TEST: right}), finish()])
+
+
+def test_work_is_replayed_on_a_branch_that_moved_checked_again_and_pushed(
+    source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:  # fmt: skip
+    # Found in the live test: a finished adapter was thrown away because a person pushed to
+    # main while the agent worked.
+    pushed = push_meanwhile(monkeypatch, tmp_path, remote, "docs/note.md", "a note\n")
+    done = Repairer(settings, good_repair(source), sandbox).process(repair_task())
+
+    assert done.pushed
+    assert head(remote) == done.commit_sha
+    assert git(remote, "rev-parse", "main~1") == pushed[0], "on top of the other commit, nothing rewritten"
+    assert git(remote, "show", "main:docs/note.md") == "a note"
+    assert ADAPTER in git(remote, "show", "--name-only", "--format=", "main").splitlines()
+
+
+def test_work_that_conflicts_with_what_was_pushed_meanwhile_is_not_pushed(
+    source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:  # fmt: skip
+    pushed = push_meanwhile(monkeypatch, tmp_path, remote, ADAPTER, "# rewritten by somebody else\n")
+    with pytest.raises(TaskFailed, match="conflicts with changes pushed"):
+        Repairer(settings, good_repair(source), sandbox).process(repair_task())
+    assert head(remote) == pushed[0], "the other commit stays as it was"
+
+
+def test_a_migration_number_taken_meanwhile_is_not_pushed(
+    source: Path, remote: Path, settings: Settings, sandbox: Bubblewrap,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:  # fmt: skip
+    taken = sorted((source / "courier-engine" / "migrations").glob("*.sql"))[-1].name[:4]
+    path = f"courier-engine/migrations/{taken}_somebody_else.sql"
+    pushed = push_meanwhile(monkeypatch, tmp_path, remote, path, "SELECT 1;\n")
+    with pytest.raises(TaskFailed, match="migration with the same number"):
+        Repairer(settings, good_repair(source), sandbox).process(repair_task())
+    assert head(remote) == pushed[0]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "fetch-pack: unexpected disconnect while reading sideband packet",  # seen in the live test
+        "fatal: early EOF",
+        "fatal: the remote end hung up unexpectedly",
+        "error: RPC failed; curl 92 HTTP/2 stream 0 was not closed cleanly",
+    ],
+)
+def test_a_cut_connection_to_github_is_tried_again(message: str) -> None:
+    assert _NETWORK_TROUBLE.search(message)

@@ -9,6 +9,7 @@ clone or a command line, and it does not reach the sandbox.
 from __future__ import annotations
 
 import base64
+import contextlib
 import re
 import shutil
 import subprocess
@@ -19,11 +20,16 @@ from pathlib import Path
 _NETWORK_TRIES = 4
 _NETWORK_TROUBLE = re.compile(
     r"Could not resolve host|Failed to connect|Connection timed out|Connection reset|Temporary failure"
+    r"|early EOF|unexpected disconnect|remote end hung up|RPC failed"
 )
 
 
 class GitError(Exception):
     """A Git command failed. The text never contains the token."""
+
+
+class PushRejected(GitError):
+    """The branch moved on GitHub since the clone (somebody else pushed meanwhile)."""
 
 
 class Workspace:
@@ -122,8 +128,30 @@ class Workspace:
         return self._git("rev-parse", "HEAD")
 
     def push(self) -> None:
-        """Pushes the commit. Never forced: if the branch moved meanwhile, the push fails."""
-        self._git("push", "--quiet", "origin", f"HEAD:refs/heads/{self._branch}", remote=True)
+        """Pushes the commit. Never forced: if the branch moved meanwhile, ``PushRejected``."""
+        try:
+            self._git("push", "--quiet", "origin", f"HEAD:refs/heads/{self._branch}", remote=True)
+        except GitError:
+            self._git("fetch", "--quiet", "origin", self._branch, remote=True)
+            moved = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+                cwd=self.repo, env={"PATH": "/usr/bin:/bin", "HOME": str(self._home)},
+                capture_output=True, check=False, stdin=subprocess.DEVNULL,
+            ).returncode != 0  # fmt: skip
+            if moved:
+                raise PushRejected("the branch moved on GitHub since the clone") from None
+            raise
+
+    def take_in_remote(self) -> str:
+        """Replays the commit on top of what was pushed meanwhile (fetched by ``push``) and
+        returns the new commit. A conflict is an error: nothing is merged by guessing."""
+        try:
+            self._git("rebase", "--quiet", "FETCH_HEAD")
+        except GitError:
+            with contextlib.suppress(GitError):
+                self._git("rebase", "--abort")
+            raise GitError("the work conflicts with changes pushed to the branch meanwhile") from None
+        return self._git("rev-parse", "HEAD")
 
     def remove(self) -> None:
         shutil.rmtree(self._root, ignore_errors=True)
